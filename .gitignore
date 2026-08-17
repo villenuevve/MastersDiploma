@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Python environment
+*.egg-info/
+.pytest_cache/
+
+# Model files
+*.pth
+*.pt
+*.onnx
+*.h5
+*.keras
+
+# Datasets
+data/
+datasets/
+
+# Generated results
+results/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
