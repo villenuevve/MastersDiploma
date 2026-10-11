@@ -338,3 +338,32 @@ def get_evaluation_ground_truth_color(split: str, filename: str):
 
     Image.fromarray(colored).save(output_path)
     return FileResponse(output_path, media_type="image/png")
+
+
+@app.get("/batch-analytics")
+def batch_analytics():
+    """Return aggregate analytics for the 120-image batch."""
+    import json
+
+    summary_path = (
+        RESULTS_DIR
+        / "batch_predictions"
+        / "batch_analysis_summary.json"
+    )
+
+    if not summary_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Batch analytics not found. Run backend.analyze_batch_results first."
+        )
+
+    try:
+        with summary_path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not read batch analytics: {exc}"
+        )
+
+    return data
