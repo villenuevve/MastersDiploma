@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Semantic Segmentation Robot</title>
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+
+<body>
+
+<header>
+
+    <div class="brand">
+
+        <div class="brand-icon">
+            ◈
+        </div>
+
+        <div>
+
+            <h1>
+                Semantic Segmentation Robot
+            </h1>
+
+            <span>
+                Computer Vision System
+            </span>
+
+        </div>
+
+    </div>
+
+
+    <div class="status">
+
+        <div class="status-dot"></div>
+
+        API connected
+
+    </div>
+
+</header>
+
+
+<main>
+
+    <!-- ================= TITLE ================= -->
+
+    <div class="page-title">
+
+        <h2>
+            Image Segmentation
+        </h2>
+
+        <p>
+            Upload an image captured by the robot camera and
+            analyze its semantic structure using the semantic
+            segmentation model.
+        </p>
+
+    </div>
+
+
+    <!-- ================= UPLOAD ================= -->
+
+    <section class="upload-card">
+
+        <label
+            class="upload-area"
+            id="uploadArea"
+            for="fileInput"
+        >
+
+            <div class="upload-icon">
+                ↑
+            </div>
+
+            <h3>
+                Upload an image
+            </h3>
+
+            <p>
+                Click to browse or drag and drop an image here
+            </p>
+
+            <p style="margin-top: 5px;">
+                JPG, JPEG or PNG
+            </p>
+
+        </label>
+
+
+        <input
+            type="file"
+            id="fileInput"
+            accept="image/jpeg,image/jpg,image/png"
+        >
+
+
+        <div
+            class="selected-file"
+            id="selectedFile"
+        ></div>
+
+
+        <div class="action-row">
+
+            <button
+                class="predict-button"
+                id="predictButton"
+                disabled
+            >
+                Run segmentation
+            </button>
+
+        </div>
+
+
+        <div
+            class="loading"
+            id="loading"
+        >
+
+            <div class="spinner"></div>
+
+            Processing image...
+
+        </div>
+
+
+        <div
+            class="error"
+            id="error"
+        ></div>
+
+    </section>
+
+
+    <!-- ================= RESULTS ================= -->
+
+    <section id="resultSection">
+
+        <div class="section-header">
+
+            <h2>
+                Segmentation Result
+            </h2>
+
+            <p>
+                Comparison between the original image and the
+                generated semantic segmentation result.
+            </p>
+
+        </div>
+
+
+        <!-- ================= IMAGES ================= -->
+
+        <div class="images-grid">
+
+            <!-- ORIGINAL -->
+
+            <div class="image-card">
+
+                <div class="image-card-header">
+
+                    <h3>
+                        Original image
+                    </h3>
+
+                    <span class="badge">
+                        Input
+                    </span>
+
+                </div>
+
+
+                <div class="image-wrapper">
+
+                    <img
+                        id="originalImage"
+                        alt="Original image"
+                    >
+
+                </div>
+
+            </div>
+
+
+            <!-- RESULT -->
+
+            <div class="image-card">
+
+                <div class="image-card-header">
+
+                    <h3 id="resultTitle">
+                        Segmentation overlay
+                    </h3>
+
+                    <span class="badge">
+                        Prediction
+                    </span>
+
+                </div>
+
+
+                <div class="image-wrapper">
+
+                    <img
+                        id="resultImage"
+                        alt="Segmentation result"
+                    >
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- ================= CONTROLS ================= -->
+
+        <div class="result-controls">
+
+            <div class="view-buttons">
+
+                <button
+                    class="view-button active"
+                    id="overlayButton"
+                    type="button"
+                >
+                    Overlay
+                </button>
+
+                <button
+                    class="view-button"
+                    id="maskButton"
+                    type="button"
+                >
+                    Mask
+                </button>
+
+            </div>
+
+
+            <div class="download-buttons">
+
+                <a
+                    class="download-button"
+                    id="downloadOverlay"
+                    href="#"
+                    download
+                >
+                    ↓ Download Overlay
+                </a>
+
+
+                <a
+                    class="download-button secondary"
+                    id="downloadMask"
+                    href="#"
+                    download
+                >
+                    ↓ Download Mask
+                </a>
+
+            </div>
+
+        </div>
+
+
+        <!-- ================= INFORMATION ================= -->
+
+        <div class="info-grid">
+
+            <div class="info-column">
+
+            <!-- IMAGE INFORMATION -->
+
+            <div class="info-card">
+
+                <h3>
+                    Image Information
+                </h3>
+
+
+                <div class="info-row">
+
+                    <span class="info-label">
+                        Filename
+                    </span>
+
+                    <span
+                        class="info-value"
+                        id="filename"
+                    >
+                        —
+                    </span>
+
+                </div>
+
+
+                <div class="info-row">
+
+                    <span class="info-label">
+                        Original resolution
+                    </span>
+
+                    <span
+                        class="info-value"
+                        id="resolution"
+                    >
+                        —
+                    </span>
+
+                </div>
+
+
+                <div class="info-row">
+
+                    <span class="info-label">
+                        Input tensor
+                    </span>
+
+                    <span
+                        class="info-value"
+                        id="tensor"
+                    >
+                        —
+                    </span>
+
+                </div>
+
+
+                <div class="info-row">
+
+                    <span class="info-label">
+                        Mask resolution
+                    </span>
+
+                    <span
+                        class="info-value"
+                        id="maskResolution"
+                    >
+                        —
+                    </span>
+
+                </div>
+
+            </div>
+
+
+            <div class="info-row">
+                    <span class="info-label">Segmentation model</span>
+                    <span class="info-value" id="modelName">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Compute device</span>
+                    <span class="info-value" id="computeDevice">—</span>
+                </div>
+
+                <!-- SEGMENTATION ANALYTICS -->
+
+            <div class="info-card" id="analyticsCard">
+                <h3>Segmentation Analytics</h3>
+
+                <div class="info-row">
+                    <span class="info-label">Inference time</span>
+                    <span class="info-value" id="analyticsInference">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Image size</span>
+                    <span class="info-value" id="analyticsImageSize">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Pixels analyzed</span>
+                    <span class="info-value" id="analyticsPixelCount">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Classes detected</span>
+                    <span class="info-value" id="analyticsClassCount">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Input file size</span>
+                    <span class="info-value" id="analyticsFileSize">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Mask resolution</span>
+                    <span class="info-value" id="analyticsMaskSize">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Inference throughput</span>
+                    <span class="info-value" id="analyticsSpeed">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Dominant class</span>
+                    <span class="info-value" id="analyticsDominantClass">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Top 3 classes coverage</span>
+                    <span class="info-value" id="analyticsTopThree">—</span>
+                </div>
+
+            </div>
+
+            </div>
+
+            <div class="info-column">
+                <div class="info-card" id="analyticsVisualCard">
+                    <h3>Class Distribution</h3>
+                    <div id="analyticsChart" style="display:flex; flex-direction:column; gap:12px; margin-top:16px;">
+                        <span class="no-classes">Run segmentation to view analytics.</span>
+                    </div>
+
+                    <h3 style="margin-top: 22px;">Scene Summary</h3>
+                    <p id="analyticsSummary" style="color:#667085; font-size:14px; line-height:1.6; margin-top:10px;">
+                        The scene report will appear after segmentation.
+                    </p>
+                </div>
+            </div>
+
+        </div>
+
+    </section>
+
+
+<!-- Hidden elements retained for existing JavaScript -->
+<div id="legacyClassesCompatibility" style="display:none">
+    <span id="classCount"></span>
+    <div id="classes"></div>
+</div>
+
+
+<section class="info-card" id="analysisHistory" style="margin-top:24px;">
+    <h2>Analysis History</h2>
+    <p style="color:#667085;font-size:14px;margin:8px 0 16px;">
+        The 10 most recent segmentation analyses saved in this browser.
+    </p>
+    <div id="historyList">
+        <p style="color:#667085;">Loading history...</p>
+    </div>
+</section>
+
+</main>
+
+
+<footer>
+
+    Semantic Segmentation Robot · Master's Diploma Project
+
+</footer>
+
+
+<script src="js/segmentationView.js"></script>
+<script src="js/segmentationModel.js"></script>
+<script src="js/app.js"></script>
+
+<script src="inspector.js"></script>
+
+<script src="js/analytics.js"></script>
+<script src="js/history.js"></script>
+
+    
+</body>
+</html>

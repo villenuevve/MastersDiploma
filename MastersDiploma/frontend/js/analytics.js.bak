@@ -1,0 +1,143 @@
+(function () {
+    "use strict";
+
+    function setText(id, value) {
+        const element = document.getElementById(id);
+        if (element) element.textContent = value;
+    }
+
+    function updateAnalytics(data) {
+        if (!data || !Array.isArray(data.detected_classes)) return;
+
+        const classes = data.detected_classes
+            .slice()
+            .sort((a, b) =>
+                Number(b.percentage || 0) - Number(a.percentage || 0)
+            );
+
+        const width = Number(data.original_width) || 0;
+        const height = Number(data.original_height) || 0;
+        const inferenceMs = Number(data.inference_time_ms) || 0;
+        const bytes = Number(data.size_bytes) || 0;
+        const megapixels = width * height / 1_000_000;
+
+        setText("analyticsInference",
+            inferenceMs > 0 ? `${inferenceMs.toFixed(2)} ms` : "—");
+
+        setText("analyticsImageSize",
+            width && height ? `${width} × ${height}` : "—");
+
+        setText("analyticsPixelCount",
+            (width * height).toLocaleString("en-US"));
+
+        setText("analyticsClassCount",
+            String(data.class_count ?? classes.length));
+
+        const fileSize = bytes >= 1024 * 1024
+            ? `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+            : `${(bytes / 1024).toFixed(1)} KB`;
+
+        setText("analyticsFileSize", bytes > 0 ? fileSize : "—");
+
+        const maskHeight = Number(data.mask_shape?.[0]) || 0;
+        const maskWidth = Number(data.mask_shape?.[1]) || 0;
+
+        setText("analyticsMaskSize",
+            maskWidth && maskHeight
+                ? `${maskWidth} × ${maskHeight}`
+                : "—");
+
+        const speed = inferenceMs > 0
+            ? megapixels / (inferenceMs / 1000)
+            : 0;
+
+        setText("analyticsSpeed",
+            speed > 0 ? `${speed.toFixed(2)} MP/s` : "—");
+
+        const topClass = classes[0];
+
+        setText("analyticsDominantClass",
+            topClass
+                ? `${topClass.name} (${Number(topClass.percentage).toFixed(2)}%)`
+                : "None");
+
+        const topThreeCoverage = classes
+            .slice(0, 3)
+            .reduce((sum, item) =>
+                sum + (Number(item.percentage) || 0), 0);
+
+        setText("analyticsTopThree",
+            `${topThreeCoverage.toFixed(2)}%`);
+
+        const chart = document.getElementById("analyticsChart");
+        if (!chart) return;
+
+        chart.replaceChildren();
+
+        if (classes.length === 0) {
+            chart.textContent = "No classes detected.";
+            setText("analyticsSummary",
+                "The model did not detect any classes.");
+            return;
+        }
+
+        classes.forEach(item => {
+            const percentage = Math.max(
+                0,
+                Math.min(100, Number(item.percentage) || 0)
+            );
+
+            const row = document.createElement("div");
+            row.style.cssText =
+                "display:flex;flex-direction:column;gap:5px;margin-bottom:12px;";
+
+            const header = document.createElement("div");
+            header.style.cssText =
+                "display:flex;justify-content:space-between;gap:12px;" +
+                "font-size:13px;color:var(--text-color,#667085);";
+
+            const name = document.createElement("span");
+            name.textContent = item.name || `Class ${item.id}`;
+
+            const value = document.createElement("span");
+            value.textContent =
+                `${percentage.toFixed(2)}% · ` +
+                `${(Number(item.pixels) || 0).toLocaleString("en-US")} px`;
+
+            header.append(name, value);
+
+            const track = document.createElement("div");
+            track.style.cssText =
+                "height:8px;background:#e9edf2;border-radius:5px;overflow:hidden;";
+
+            const bar = document.createElement("div");
+            bar.style.cssText =
+                `height:100%;width:${percentage}%;` +
+                `background:${item.color || "#607d8b"};` +
+                "border-radius:5px;";
+
+            track.appendChild(bar);
+            row.append(header, track);
+            chart.appendChild(row);
+        });
+
+        const top = classes.slice(0, 3);
+
+        const summary = top.map(item =>
+            `${item.name}: ${Number(item.percentage).toFixed(2)}%`
+        ).join(", ");
+
+        setText(
+            "analyticsSummary",
+            `The dominant class is ${top[0].name}, covering ` +
+            `${Number(top[0].percentage).toFixed(2)}% of the image. ` +
+            `The three largest classes are ${summary}. ` +
+            `A total of ${classes.length} classes were detected. ` +
+            `Inference time: ${inferenceMs.toFixed(2)} ms.`
+        );
+    }
+
+    window.addEventListener("segmentation-result", event => {
+        updateAnalytics(event.detail);
+    });
+})();

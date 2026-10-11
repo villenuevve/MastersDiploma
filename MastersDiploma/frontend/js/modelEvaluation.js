@@ -1,0 +1,397 @@
+(() => {
+    const CLASS_NAMES = {
+        road: "Road", sidewalk: "Sidewalk", building: "Building",
+        wall: "Wall", fence: "Fence", pole: "Pole",
+        "traffic light": "Traffic light", "traffic sign": "Traffic sign",
+        vegetation: "Vegetation", terrain: "Terrain", sky: "Sky",
+        person: "Person", rider: "Rider", car: "Car",
+        truck: "Truck", bus: "Bus", train: "Train",
+        motorcycle: "Motorcycle", bicycle: "Bicycle"
+    };
+
+    const API = "http://127.0.0.1:8000/evaluate";
+    const ALL_RESULTS = "http://127.0.0.1:8000/evaluate/all";
+    const BASE = "http://127.0.0.1:8000";
+
+    const SAMPLES = [
+        "aachen_000004_000019.png",
+        "aachen_000005_000019.png",
+        "aachen_000006_000019.png",
+        "aachen_000007_000019.png"
+    ];
+
+    function createSection() {
+        if (document.getElementById("model-evaluation")) return;
+
+        const section = document.createElement("section");
+        section.id = "model-evaluation";
+        section.style.cssText = `
+            margin:32px 0;
+            padding:24px;
+            border:1px solid var(--border-color,#ddd);
+            border-radius:14px;
+        `;
+
+        section.innerHTML = `
+            <h2>Model Evaluation</h2>
+            <p style="opacity:.7;margin:8px 0 20px">
+                Quantitative and visual evaluation against Cityscapes ground-truth masks.
+            </p>
+            <div id="evaluation-status" role="status">Loading results…</div>
+            <div id="evaluation-content"></div>
+        `;
+
+        const anchor =
+            document.getElementById("analysis-history") ||
+            document.querySelector("main") ||
+            document.body;
+
+        anchor.appendChild(section);
+    }
+
+    function pct(value) {
+        if (value == null || !Number.isFinite(Number(value))) return "N/A";
+        return `${(Number(value) * 100).toFixed(2)}%`;
+    }
+
+    function number(value) {
+        return Number(value || 0).toLocaleString();
+    }
+
+    function esc(value) {
+        const el = document.createElement("span");
+        el.textContent = String(value);
+        return el.innerHTML;
+    }
+
+    function metricCard(label, value, detail = "") {
+        return `
+            <div style="padding:18px;border:1px solid #ddd;border-radius:10px">
+                <div style="opacity:.7;font-size:14px">${label}</div>
+                <div style="font-size:28px;font-weight:700;margin-top:8px">${value}</div>
+                ${detail ? `<div style="font-size:12px;opacity:.65;margin-top:6px">${detail}</div>` : ""}
+            </div>`;
+    }
+
+    function bar(label, value) {
+        const width = Math.max(0, Math.min(100, Number(value) || 0));
+        return `
+            <div style="margin:14px 0">
+                <div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:6px">
+                    <span>${label}</span><strong>${width.toFixed(2)}%</strong>
+                </div>
+                <div style="height:10px;background:var(--border-color,#ddd);border-radius:8px;overflow:hidden">
+                    <div style="height:100%;width:${width}%;background:#4778c7;border-radius:8px"></div>
+                </div>
+            </div>`;
+    }
+
+    function renderComparison(results) {
+        const splits = [
+            ["Train", results.train],
+            ["Validation", results.val],
+            ["All images", results.all]
+        ].filter(([, data]) => data);
+
+        const rows = splits.map(([label, data]) => `
+            <tr>
+                <td>${label}</td>
+                <td style="text-align:right">${pct(data.mean_iou)}</td>
+                <td style="text-align:right">${pct(data.pixel_accuracy)}</td>
+                <td style="text-align:right">${number(data.images_evaluated)}</td>
+                <td style="text-align:right">${number(data.evaluated_pixels)}</td>
+            </tr>`).join("");
+
+        const charts = splits.map(([label, data]) => `
+            <div style="margin-bottom:20px">
+                <strong>${label}</strong>
+                ${bar("mIoU", Number(data.mean_iou) * 100)}
+                ${bar("Pixel Accuracy", Number(data.pixel_accuracy) * 100)}
+            </div>`).join("");
+
+        return `
+            <h3 style="margin:26px 0 12px">Dataset split comparison</h3>
+            <div style="overflow-x:auto">
+                <table style="width:100%;border-collapse:collapse">
+                    <thead><tr>
+                        <th style="text-align:left">Split</th>
+                        <th style="text-align:right">mIoU</th>
+                        <th style="text-align:right">Pixel Accuracy</th>
+                        <th style="text-align:right">Images</th>
+                        <th style="text-align:right">Valid pixels</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+            <h3 style="margin:26px 0 12px">Metric comparison</h3>
+            ${charts}
+        `;
+    }
+
+    function renderClassTable(data) {
+        const rows = Object.entries(data.per_class_iou || {}).map(([name, score]) => `
+            <tr>
+                <td style="padding:9px;border-bottom:1px solid #ddd">
+                    ${esc(CLASS_NAMES[name] || name)}
+                </td>
+                <td style="padding:9px;text-align:right;border-bottom:1px solid #ddd">
+                    ${pct(score)}
+                </td>
+            </tr>`).join("");
+
+        return `
+            <h3 style="margin:26px 0 12px">Validation IoU by class</h3>
+            <div style="overflow-x:auto">
+                <table style="width:100%;border-collapse:collapse">
+                    <thead><tr>
+                        <th style="text-align:left;padding:9px;border-bottom:2px solid #aaa">Class</th>
+                        <th style="text-align:right;padding:9px;border-bottom:2px solid #aaa">IoU</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+    }
+
+
+    function renderConfusionMatrix(data) {
+        const matrix = data.confusion_matrix;
+
+        if (!Array.isArray(matrix) || matrix.length !== 19 ||
+            matrix.some(row => !Array.isArray(row) || row.length !== 19)) {
+            return `
+                <h3 style="margin:26px 0 12px">Confusion Matrix</h3>
+                <p>Confusion matrix is unavailable or has an unexpected format.</p>
+            `;
+        }
+
+        const names = Object.keys(CLASS_NAMES);
+        const shortNames = [
+            "Road", "Sidewalk", "Building", "Wall", "Fence",
+            "Pole", "Traffic light", "Traffic sign", "Vegetation",
+            "Terrain", "Sky", "Person", "Rider", "Car",
+            "Truck", "Bus", "Train", "Motorcycle", "Bicycle"
+        ];
+
+        const maxValue = Math.max(1, ...matrix.flat().map(Number));
+
+        const cells = matrix.map((row, i) =>
+            row.map((value, j) => {
+                const count = Number(value) || 0;
+                const intensity = Math.sqrt(count / maxValue);
+                const background = i === j
+                    ? `rgba(30, 130, 76, ${0.12 + 0.78 * intensity})`
+                    : `rgba(190, 65, 65, ${0.04 + 0.72 * intensity})`;
+                const foreground = intensity > 0.58 ? "#fff" : "var(--text-color,#222)";
+
+                return `
+                    <td title="Actual: ${esc(shortNames[i])}; Predicted: ${esc(shortNames[j])}; Pixels: ${count.toLocaleString()}"
+                        style="padding:0;min-width:30px;height:30px;text-align:center;
+                               background:${background};color:${foreground};
+                               border:1px solid rgba(128,128,128,.18);font-size:10px">
+                        ${count ? count.toLocaleString() : "·"}
+                    </td>
+                `;
+            }).join("")
+        ).map((row, i) => `
+            <tr>
+                <th title="Actual class: ${esc(shortNames[i])}"
+                    style="position:sticky;left:0;background:var(--background-color,#fff);
+                           text-align:right;padding:6px;font-size:11px;white-space:nowrap">
+                    ${esc(shortNames[i])}
+                </th>
+                ${row}
+            </tr>
+        `).join("");
+
+        return `
+            <div style="margin-top:30px">
+                <h3 style="margin-bottom:8px">Confusion Matrix</h3>
+                <p style="opacity:.7;margin:8px 0 14px;font-size:13px">
+                    Rows are actual classes; columns are predicted classes.
+                    Green cells on the diagonal indicate correct predictions.
+                    Red cells off the diagonal indicate misclassifications.
+                    Hover over a cell to see its exact pixel count.
+                </p>
+                <div style="overflow:auto;max-width:100%">
+                    <table style="border-collapse:collapse;font-variant-numeric:tabular-nums">
+                        <thead>
+                            <tr>
+                                <th style="position:sticky;left:0;background:var(--background-color,#fff);padding:6px"></th>
+                                ${shortNames.map(name => `
+                                    <th title="Predicted class: ${esc(name)}"
+                                        style="height:145px;min-width:30px;vertical-align:bottom;
+                                               padding:4px;font-size:10px;font-weight:500">
+                                        <div style="writing-mode:vertical-rl;transform:rotate(180deg);margin:auto">
+                                            ${esc(name)}
+                                        </div>
+                                    </th>
+                                `).join("")}
+                            </tr>
+                        </thead>
+                        <tbody>${cells}</tbody>
+                    </table>
+                </div>
+                <p style="font-size:12px;opacity:.65;margin-top:8px">
+                    Pixel counts are shown in each cell. Color intensity is scaled to the largest cell.
+                </p>
+            </div>
+        `;
+    }
+
+    function renderVisualComparison() {
+        return `
+            <div style="margin-top:32px">
+                <h3>Qualitative Segmentation Evaluation</h3>
+                <p style="opacity:.7;margin:8px 0 16px">
+                    Compare the input image, ground-truth segmentation and model prediction.
+                </p>
+
+                <label for="visual-sample" style="display:block;margin-bottom:8px">
+                    Validation image
+                </label>
+                <select id="visual-sample"
+                    style="max-width:100%;padding:10px;border:1px solid #bbb;border-radius:8px">
+                    ${SAMPLES.map((name, i) =>
+                        `<option value="${name}">${i + 1}. ${name}</option>`
+                    ).join("")}
+                </select>
+
+                <div id="visual-status" role="status" style="margin:12px 0">
+                    Select an image to load its comparison.
+                </div>
+
+                <div id="visual-grid"
+                    style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px">
+                    ${["Original image", "Ground-truth mask", "Model prediction"].map((label, i) => `
+                        <div style="min-width:0">
+                            <h4 style="margin-bottom:8px">${label}</h4>
+                            <div style="border:1px solid #ddd;border-radius:10px;overflow:hidden;background:#f4f4f4;min-height:120px;display:flex;align-items:center;justify-content:center">
+                                <img id="visual-image-${i}"
+                                    alt="${label}"
+                                    style="display:block;width:100%;height:auto;object-fit:contain">
+                            </div>
+                        </div>
+                    `).join("")}
+                </div>
+                <p style="font-size:12px;opacity:.7;margin-top:12px">
+                    Note: the displayed ground-truth mask is colorized for visualization.
+                    The predicted mask is generated by the current model.
+                </p>
+            </div>
+        `;
+    }
+
+    async function loadVisualSample(filename) {
+        const status = document.getElementById("visual-status");
+        const images = [
+            document.getElementById("visual-image-0"),
+            document.getElementById("visual-image-1"),
+            document.getElementById("visual-image-2")
+        ];
+
+        status.textContent = "Loading image and generating prediction…";
+        images.forEach(img => {
+            img.removeAttribute("src");
+            img.alt = "Loading…";
+        });
+
+        try {
+            const response = await fetch(
+                `${BASE}/evaluation/sample/val/${encodeURIComponent(filename)}`
+            );
+
+            if (!response.ok) {
+                throw new Error(`Sample API returned HTTP ${response.status}`);
+            }
+
+            const sample = await response.json();
+
+            images[0].src = BASE + sample.image_url;
+            images[1].src =
+                `${BASE}/evaluation/ground-truth/val/${encodeURIComponent(filename)}`;
+            images[2].src =
+                `${BASE}/evaluation/prediction/val/${encodeURIComponent(filename)}`;
+
+            // Detect missing images separately rather than silently showing blank panels.
+            const checks = images.map(img => new Promise(resolve => {
+                img.onload = () => resolve({ ok: true });
+                img.onerror = () => resolve({ ok: false, url: img.src });
+            }));
+
+            const outcomes = await Promise.all(checks);
+            const failed = outcomes.filter(item => !item.ok);
+
+            if (failed.length) {
+                status.textContent =
+                    "Some comparison images could not be loaded. Check the API routes and server logs.";
+            } else {
+                status.textContent = `Showing comparison for ${filename}`;
+            }
+        } catch (error) {
+            status.textContent = `Could not load comparison: ${error.message}`;
+        }
+    }
+
+    async function loadEvaluation() {
+        createSection();
+
+        const status = document.getElementById("evaluation-status");
+        const content = document.getElementById("evaluation-content");
+
+        try {
+            const [validationResponse, allResponse] = await Promise.all([
+                fetch(API),
+                fetch(ALL_RESULTS)
+            ]);
+
+            if (!validationResponse.ok) {
+                throw new Error(`Validation API returned HTTP ${validationResponse.status}`);
+            }
+
+            const validation = await validationResponse.json();
+            let results = { val: validation };
+
+            if (allResponse.ok) {
+                const allData = await allResponse.json();
+                results = { ...allData, val: validation };
+            }
+
+            content.innerHTML = `
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">
+                    ${metricCard("Validation mIoU", pct(validation.mean_iou), "4 validation images")}
+                    ${metricCard("Pixel Accuracy", pct(validation.pixel_accuracy))}
+                    ${metricCard("Images evaluated", number(validation.images_evaluated))}
+                    ${metricCard("Valid pixels", number(validation.evaluated_pixels))}
+                </div>
+                ${results.train && results.all ? renderComparison(results) : ""}
+                ${renderClassTable(validation)}
+                ${renderConfusionMatrix(validation)}
+                ${renderVisualComparison()}
+                <p style="margin-top:18px;font-size:13px;opacity:.75">
+                    Preliminary evaluation on a small subset: 4 training and 4 validation images.
+                    The combined result includes both splits and is not an independent test result.
+                    N/A means that no valid ground-truth pixels for that class were present.
+                </p>
+            `;
+
+            const selector = document.getElementById("visual-sample");
+            selector.addEventListener("change", () => {
+                loadVisualSample(selector.value);
+            });
+
+            status.textContent = allResponse.ok
+                ? "Validation and dataset comparison results loaded."
+                : "Validation results loaded; full split comparison is unavailable.";
+
+            await loadVisualSample(SAMPLES[0]);
+        } catch (error) {
+            status.textContent = `Could not load evaluation results: ${error.message}`;
+        }
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", loadEvaluation);
+    } else {
+        loadEvaluation();
+    }
+})();

@@ -1,0 +1,338 @@
+(function () {
+    "use strict";
+
+    function showResultSection(section) {
+        if (section) {
+            section.style.display = "block";
+        }
+    }
+
+    function showImage(imageElement, url) {
+        if (imageElement && url) {
+            imageElement.src = url;
+        }
+    }
+
+    function setText(elementId, value) {
+        const element = document.getElementById(elementId);
+
+        if (element) {
+            element.textContent = value ?? "";
+        }
+    }
+
+    function renderImageInformation(data) {
+        setText("filename", data.filename);
+        setText("modelName", data.model || "—");
+
+        const deviceNames = {
+            mps: "Apple Metal (MPS)",
+            cuda: "NVIDIA CUDA",
+            cpu: "CPU"
+        };
+        setText(
+            "computeDevice",
+            deviceNames[data.device] || data.device || "—"
+        );
+        setText(
+            "resolution",
+            `${data.original_width} × ${data.original_height}`
+        );
+        const inputWidth = Number(data.inference_width);
+        const inputHeight = Number(data.inference_height);
+
+        if (inputWidth > 0 && inputHeight > 0) {
+            setText("tensor", `1 × 3 × ${inputHeight} × ${inputWidth}`);
+        } else if (Array.isArray(data.tensor_shape)) {
+            setText("tensor", data.tensor_shape.join(" × "));
+        }
+        setText(
+            "maskResolution",
+            `${data.mask_shape[1]} × ${data.mask_shape[0]}`
+        );
+    }
+
+    /* =========================================================
+       RENDER DETECTED CLASSES
+       ID REMOVED FROM DISPLAY
+    ========================================================= */
+
+    function renderDetectedClasses(
+        detectedClasses,
+        classesContainer,
+        classCount,
+        colors
+    ) {
+
+        classesContainer.innerHTML =
+            "";
+
+
+        if (
+            !Array.isArray(
+                detectedClasses
+            ) ||
+            detectedClasses.length === 0
+        ) {
+
+            classCount.textContent =
+                "(0)";
+
+
+            const empty =
+                document.createElement(
+                    "span"
+                );
+
+
+            empty.className =
+                "no-classes";
+
+
+            empty.textContent =
+                "No classes detected";
+
+
+            classesContainer.appendChild(
+                empty
+            );
+
+
+            return;
+        }
+
+
+        classCount.textContent =
+            `(${detectedClasses.length})`;
+
+
+        detectedClasses.forEach(
+            function (item) {
+
+                const tag =
+                    document.createElement(
+                        "div"
+                    );
+
+
+                tag.className =
+                    "class-tag";
+
+
+                /* =========================
+                   LEFT
+                ========================= */
+
+                const left =
+                    document.createElement(
+                        "div"
+                    );
+
+
+                left.className =
+                    "class-left";
+
+
+                /* Color */
+
+                const circle =
+                    document.createElement(
+                        "span"
+                    );
+
+
+                circle.className =
+                    "class-color";
+
+
+                const color =
+                    colors[Number(item.id)];
+
+
+                if (color) {
+
+                    circle.style.backgroundColor =
+                        `rgb(
+                            ${color[0]},
+                            ${color[1]},
+                            ${color[2]}
+                        )`;
+
+                }
+                else {
+
+                    circle.style.backgroundColor =
+                        "#98a2b3";
+
+                }
+
+
+                /* =========================
+                   CLASS NAME
+                   NO #ID HERE
+                ========================= */
+
+                const name =
+                    document.createElement(
+                        "span"
+                    );
+
+
+                name.className =
+                    "class-name";
+
+
+                name.textContent =
+                    item.name;
+
+
+                left.appendChild(
+                    circle
+                );
+
+
+                left.appendChild(
+                    name
+                );
+
+
+                /* =========================
+                   RIGHT
+                ========================= */
+
+                const right =
+                    document.createElement(
+                        "div"
+                    );
+
+
+                right.className =
+                    "class-right";
+
+
+                /* Percentage */
+
+                const percentage =
+                    document.createElement(
+                        "span"
+                    );
+
+
+                percentage.className =
+                    "class-percentage";
+
+
+                percentage.textContent =
+                    `${Number(item.percentage).toFixed(2)}%`;
+
+
+                /* Pixels */
+
+                const pixels =
+                    document.createElement(
+                        "span"
+                    );
+
+
+                pixels.className =
+                    "class-pixels";
+
+
+                pixels.textContent =
+                    `${Number(item.pixels).toLocaleString()} px`;
+
+
+                right.appendChild(
+                    percentage
+                );
+
+
+                right.appendChild(
+                    pixels
+                );
+
+
+                /* =========================
+                   BUILD
+                ========================= */
+
+                tag.appendChild(
+                    left
+                );
+
+
+                tag.appendChild(
+                    right
+                );
+
+
+                classesContainer.appendChild(
+                    tag
+                );
+
+            }
+        );
+
+    }
+
+
+    function showImageMode(
+        imageElement,
+        titleElement,
+        activeButton,
+        inactiveButton,
+        imageUrl,
+        title
+    ) {
+        showImage(imageElement, `${imageUrl}?t=${Date.now()}`);
+
+        if (titleElement) {
+            titleElement.textContent = title;
+        }
+
+        activeButton.classList.add("active");
+        inactiveButton.classList.remove("active");
+    }
+
+
+    function prepareForNewImage(
+        originalImage,
+        resultImage,
+        resultSection,
+        classesContainer,
+        classCount,
+        file
+    ) {
+        originalImage.src = URL.createObjectURL(file);
+
+        // Hide previous prediction until a new one succeeds.
+        resultSection.style.display = "none";
+
+        if (resultImage) {
+            resultImage.removeAttribute("src");
+        }
+
+        if (classesContainer) {
+            classesContainer.innerHTML = "";
+        }
+
+        if (classCount) {
+            classCount.textContent = "(0)";
+        }
+
+        setText("filename", "—");
+        setText("resolution", "—");
+        setText("tensor", "—");
+        setText("maskResolution", "—");
+    }
+
+    window.SegmentationView = {
+        showResultSection,
+        showImage,
+        showImageMode,
+        prepareForNewImage,
+        setText,
+        renderImageInformation,
+        renderDetectedClasses
+    };
+})();

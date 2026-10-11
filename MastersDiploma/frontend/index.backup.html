@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semantic Segmentation Robot</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+<header>
+    <div class="brand">
+        <div class="brand-icon">◈</div>
+        <div>
+            <h1>Semantic Segmentation Robot</h1>
+            <span>Computer Vision System</span>
+        </div>
+    </div>
+
+    <div class="status">
+        <div class="status-dot"></div>
+        API connected
+    </div>
+</header>
+
+<main>
+
+    <div class="page-title">
+        <h2>Image Segmentation</h2>
+        <p>
+            Upload an image captured by the robot camera and
+            analyze its semantic structure using the semantic
+            segmentation model.
+        </p>
+    </div>
+
+    <section class="upload-card">
+
+        <label class="upload-area" id="uploadArea" for="fileInput">
+            <div class="upload-icon">↑</div>
+            <h3>Upload an image</h3>
+            <p>Click to browse or drag and drop an image here</p>
+            <p style="margin-top: 5px;">JPG, JPEG or PNG</p>
+        </label>
+
+        <input
+            type="file"
+            id="fileInput"
+            accept="image/jpeg,image/jpg,image/png"
+        >
+
+        <div class="selected-file" id="selectedFile"></div>
+
+        <div class="action-row">
+            <button
+                class="predict-button"
+                id="predictButton"
+                disabled
+            >
+                Run segmentation
+            </button>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            Processing image...
+        </div>
+
+        <div class="error" id="error"></div>
+
+    </section>
+
+    <section id="resultSection">
+
+        <div class="section-header">
+            <h2>Segmentation Result</h2>
+            <p>
+                Comparison between the original image and the
+                generated semantic segmentation result.
+            </p>
+        </div>
+
+        <div class="images-grid">
+
+            <div class="image-card">
+                <div class="image-card-header">
+                    <h3>Original image</h3>
+                    <span class="badge">Input</span>
+                </div>
+
+                <div class="image-wrapper">
+                    <img id="originalImage" alt="Original image">
+                </div>
+            </div>
+
+            <div class="image-card">
+                <div class="image-card-header">
+                    <h3 id="resultTitle">Segmentation overlay</h3>
+                    <span class="badge">Prediction</span>
+                </div>
+
+                <div class="image-wrapper">
+                    <img id="resultImage" alt="Segmentation result">
+                </div>
+            </div>
+
+        </div>
+
+        <div class="result-controls">
+
+            <div class="view-buttons">
+                <button
+                    class="view-button active"
+                    id="overlayButton"
+                    type="button"
+                >
+                    Overlay
+                </button>
+
+                <button
+                    class="view-button"
+                    id="maskButton"
+                    type="button"
+                >
+                    Mask
+                </button>
+            </div>
+
+            <div class="download-buttons">
+                <a
+                    class="download-button"
+                    id="downloadOverlay"
+                    href="#"
+                    download
+                >
+                    ↓ Download Overlay
+                </a>
+
+                <a
+                    class="download-button secondary"
+                    id="downloadMask"
+                    href="#"
+                    download
+                >
+                    ↓ Download Mask
+                </a>
+            </div>
+
+        </div>
+
+        <div class="info-grid">
+
+            <div class="info-card">
+                <h3>Image Information</h3>
+
+                <div class="info-row">
+                    <span class="info-label">Filename</span>
+                    <span class="info-value" id="filename">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Original resolution</span>
+                    <span class="info-value" id="resolution">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Input tensor</span>
+                    <span class="info-value" id="tensor">—</span>
+                </div>
+
+                <div class="info-row">
+                    <span class="info-label">Mask resolution</span>
+                    <span class="info-value" id="maskResolution">—</span>
+                </div>
+            </div>
+
+            <div class="info-card">
+                <h3>
+                    Detected Classes
+                    <span class="class-count" id="classCount"></span>
+                </h3>
+
+                <div class="classes" id="classes">
+                    <span class="no-classes">No prediction yet</span>
+                </div>
+
+                <div class="classes-description">
+                    Semantic classes detected by the model.
+                    Percentage represents the proportion of
+                    image pixels assigned to each class.
+                </div>
+            </div>
+
+        </div>
+
+    </section>
+
+</main>
+
+<footer>
+    Semantic Segmentation Robot · Master's Diploma Project
+</footer>
+
+<script>
+    const API_URL = "http://127.0.0.1:8000";
+
+    const CITYSCAPES_COLORS = [
+        [128, 64, 128],
+        [244, 35, 232],
+        [70, 70, 70],
+        [102, 102, 156],
+        [190, 153, 153],
+        [153, 153, 153],
+        [250, 170, 30],
+        [220, 220, 0],
+        [107, 142, 35],
+        [152, 251, 152],
+        [70, 130, 180],
+        [220, 20, 60],
+        [255, 0, 0],
+        [0, 0, 142],
+        [0, 0, 70],
+        [0, 60, 100],
+        [0, 80, 100],
+        [0, 0, 230],
+        [119, 11, 32]
+    ];
+
+    const fileInput = document.getElementById("fileInput");
+    const uploadArea = document.getElementById("uploadArea");
+    const selectedFile = document.getElementById("selectedFile");
+    const predictButton = document.getElementById("predictButton");
+    const loading = document.getElementById("loading");
+    const errorBox = document.getElementById("error");
+    const resultSection = document.getElementById("resultSection");
+    const originalImage = document.getElementById("originalImage");
+    const resultImage = document.getElementById("resultImage");
+    const resultTitle = document.getElementById("resultTitle");
+    const overlayButton = document.getElementById("overlayButton");
+    const maskButton = document.getElementById("maskButton");
+    const downloadOverlay = document.getElementById("downloadOverlay");
+    const downloadMask = document.getElementById("downloadMask");
+    const classesContainer = document.getElementById("classes");
+    const classCount = document.getElementById("classCount");
+
+    let selectedImage = null;
+    let overlayUrl = "";
+    let maskUrl = "";
+    let originalImageUrl = "";
+
+    fileInput.addEventListener("change", function () {
+        if (!this.files || this.files.length === 0) return;
+        selectImage(this.files[0]);
+    });
+
+    function selectImage(file) {
+        if (!file.type.startsWith("image/")) {
+            showError("Please select a valid image file.");
+            return;
+        }
+
+        selectedImage = file;
+        selectedFile.style.display = "block";
+        selectedFile.textContent = `Selected file: ${file.name}`;
+        predictButton.disabled = false;
+        errorBox.style.display = "none";
+
+        if (originalImageUrl) {
+            URL.revokeObjectURL(originalImageUrl);
+        }
+
+        originalImageUrl = URL.createObjectURL(file);
+        originalImage.src = originalImageUrl;
+        resultSection.style.display = "block";
+    }
+
+    uploadArea.addEventListener("dragover", function (event) {
+        event.preventDefault();
+        uploadArea.classList.add("dragover");
+    });
+
+    uploadArea.addEventListener("dragleave", function () {
+        uploadArea.classList.remove("dragover");
+    });
+
+    uploadArea.addEventListener("drop", function (event) {
+        event.preventDefault();
+        uploadArea.classList.remove("dragover");
+
+        const files = event.dataTransfer.files;
+        if (!files || files.length === 0) return;
+
+        selectImage(files[0]);
+    });
+
+    predictButton.addEventListener("click", async function () {
+        if (!selectedImage) {
+            showError("Please select an image first.");
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", selectedImage);
+
+        predictButton.disabled = true;
+        loading.style.display = "flex";
+        errorBox.style.display = "none";
+
+        try {
+            const response = await fetch(`${API_URL}/predict`, {
+                method: "POST",
+                body: formData
+            });
+
+            if (!response.ok) {
+                let message = `Server returned ${response.status}`;
+
+                try {
+                    const errorData = await response.json();
+                    if (errorData.detail) message = errorData.detail;
+                } catch (_) {}
+
+                throw new Error(message);
+            }
+
+            const data = await response.json();
+            console.log("Prediction:", data);
+
+            const overlayFilename = data.overlay_file.split("/").pop();
+            const maskFilename = data.mask_file.split("/").pop();
+
+            overlayUrl = `${API_URL}/results/${overlayFilename}`;
+            maskUrl = `${API_URL}/results/${maskFilename}`;
+
+            resultImage.src = `${overlayUrl}?t=${Date.now()}`;
+            resultTitle.textContent = "Segmentation overlay";
+
+            overlayButton.classList.add("active");
+            maskButton.classList.remove("active");
+
+            downloadOverlay.href = overlayUrl;
+            downloadOverlay.download = overlayFilename;
+
+            downloadMask.href = maskUrl;
+            downloadMask.download = maskFilename;
+
+            document.getElementById("filename").textContent = data.filename;
+            document.getElementById("resolution").textContent =
+                `${data.original_width} × ${data.original_height}`;
+            document.getElementById("tensor").textContent =
+                data.tensor_shape.join(" × ");
+            document.getElementById("maskResolution").textContent =
+                `${data.mask_shape[1]} × ${data.mask_shape[0]}`;
+
+            renderDetectedClasses(data.detected_classes);
+
+            window.dispatchEvent(
+                new CustomEvent("segmentation-result", {
+                    detail: data
+                })
+            );
+
+            resultSection.style.display = "block";
+            resultSection.scrollIntoView({
+                behavior: "smooth",
+                block: "start"
+            });
+
+        } catch (error) {
+            console.error(error);
+            showError(
+                `Unable to process the image: ${error.message}. ` +
+                "Make sure the FastAPI backend is running."
+            );
+        } finally {
+            predictButton.disabled = false;
+            loading.style.display = "none";
+        }
+    });
+
+    function renderDetectedClasses(detectedClasses) {
+        classesContainer.innerHTML = "";
+
+        if (!Array.isArray(detectedClasses) || detectedClasses.length === 0) {
+            classCount.textContent = "(0)";
+
+            const empty = document.createElement("span");
+            empty.className = "no-classes";
+            empty.textContent = "No classes detected";
+            classesContainer.appendChild(empty);
+            return;
+        }
+
+        classCount.textContent = `(${detectedClasses.length})`;
+
+        detectedClasses.forEach(function (item) {
+            const tag = document.createElement("div");
+            tag.className = "class-tag";
+
+            const left = document.createElement("div");
+            left.className = "class-left";
+
+            const circle = document.createElement("span");
+            circle.className = "class-color";
+
+            const color = CITYSCAPES_COLORS[Number(item.id)];
+            circle.style.backgroundColor = color
+                ? `rgb(${color[0]}, ${color[1]}, ${color[2]})`
+                : "#98a2b3";
+
+            const name = document.createElement("span");
+            name.className = "class-name";
+            name.textContent = item.name;
+
+            left.appendChild(circle);
+            left.appendChild(name);
+
+            const right = document.createElement("div");
+            right.className = "class-right";
+
+            const percentage = document.createElement("span");
+            percentage.className = "class-percentage";
+            percentage.textContent = `${Number(item.percentage).toFixed(2)}%`;
+
+            const pixels = document.createElement("span");
+            pixels.className = "class-pixels";
+            pixels.textContent = `${Number(item.pixels).toLocaleString()} px`;
+
+            right.appendChild(percentage);
+            right.appendChild(pixels);
+
+            tag.appendChild(left);
+            tag.appendChild(right);
+            classesContainer.appendChild(tag);
+        });
+    }
+
+    overlayButton.addEventListener("click", function () {
+        if (!overlayUrl) return;
+
+        resultImage.src = `${overlayUrl}?t=${Date.now()}`;
+        resultTitle.textContent = "Segmentation overlay";
+        overlayButton.classList.add("active");
+        maskButton.classList.remove("active");
+    });
+
+    maskButton.addEventListener("click", function () {
+        if (!maskUrl) return;
+
+        resultImage.src = `${maskUrl}?t=${Date.now()}`;
+        resultTitle.textContent = "Segmentation mask";
+        maskButton.classList.add("active");
+        overlayButton.classList.remove("active");
+    });
+
+    function showError(message) {
+        errorBox.textContent = message;
+        errorBox.style.display = "block";
+    }
+</script>
+
+<script src="inspector.js"></script>
+
+</body>
+</html>
