@@ -165,3 +165,45 @@ def get_detected_classes(mask: np.ndarray):
             })
 
     return detected
+
+def create_traversability_map(mask: np.ndarray):
+    """
+    Create a heuristic traversability map from Cityscapes class IDs.
+
+    Values:
+        255 - high traversability
+        150 - medium traversability
+         70 - low traversability
+          0 - not recommended / unknown
+    """
+    traversability = np.zeros(mask.shape, dtype=np.uint8)
+
+    class_weights = {
+        0: 255,  # road
+        1: 220,  # sidewalk
+        8: 70,   # vegetation
+        9: 150,  # terrain
+    }
+
+    for class_id, weight in class_weights.items():
+        traversability[mask == class_id] = weight
+
+    return traversability
+
+
+def colorize_traversability_map(traversability: np.ndarray):
+    """
+    Convert traversability values into a color visualization:
+    green - high, yellow - medium, orange - low, red - not recommended.
+    """
+    colored = np.zeros(
+        (*traversability.shape, 3),
+        dtype=np.uint8,
+    )
+
+    colored[traversability == 0] = [220, 65, 65]
+    colored[(traversability > 0) & (traversability < 100)] = [240, 145, 55]
+    colored[(traversability >= 100) & (traversability < 200)] = [235, 205, 65]
+    colored[traversability >= 200] = [65, 180, 110]
+
+    return colored
