@@ -1,7 +1,3 @@
-/* ========= 
-       API
-    ======== */
-
     const API_URL =
         "http://127.0.0.1:8000";
 
@@ -75,6 +71,15 @@
     const maskButton =
         document.getElementById("maskButton");
 
+    const traversabilityButton =
+        document.getElementById("traversabilityButton");
+
+    const downloadTraversability =
+        document.getElementById("downloadTraversability");
+
+    const traversabilityLegend =
+        document.getElementById("traversabilityLegend");
+
     const downloadOverlay =
         document.getElementById("downloadOverlay");
 
@@ -93,6 +98,8 @@
     let overlayUrl = "";
 
     let maskUrl = "";
+
+    let traversabilityUrl = "";
 
 
     /* =============
@@ -300,6 +307,30 @@
                 maskUrl =
                     `${API_URL}/results/${maskFilename}`;
 
+                const traversabilityFilename =
+                    data.traversability_file
+                        ? data.traversability_file.split("/").pop()
+                        : "";
+
+                traversabilityUrl =
+                    data.traversability_url
+                        ? `${API_URL}${data.traversability_url}`
+                        : (
+                            traversabilityFilename
+                                ? `${API_URL}/results/${traversabilityFilename}`
+                                : ""
+                        );
+
+                traversabilityButton.disabled = !traversabilityUrl;
+
+                if (traversabilityUrl) {
+                    downloadTraversability.href = traversabilityUrl;
+                    downloadTraversability.download = traversabilityFilename;
+                    traversabilityLegend.style.display = "block";
+                } else {
+                    traversabilityLegend.style.display = "none";
+                }
+
 
 
                 window.SegmentationView.showImage(
@@ -320,6 +351,8 @@
                 maskButton.classList.remove(
                     "active"
                 );
+
+                traversabilityButton.classList.remove("active");
 
                 downloadOverlay.href =
                     fullOverlayUrl;
@@ -380,39 +413,62 @@
     );
 
 
-    /* =====================
-       IMAGE MODE CONTROLS
-    ======================== */
+    
+        /* =====================
+        IMAGE MODE CONTROLS
+        ======================== */
 
-    overlayButton.addEventListener("click", function () {
-        if (!overlayUrl) {
-            return;
+        function setResultView(mode) {
+            const modes = {
+                overlay: {
+                    url: overlayUrl,
+                    title: "Segmentation overlay"
+                },
+                mask: {
+                    url: maskUrl,
+                    title: "Segmentation mask"
+                },
+                traversability: {
+                    url: traversabilityUrl,
+                    title: "Traversability Map"
+                }
+            };
+
+            const selectedMode = modes[mode];
+
+            if (!selectedMode || !selectedMode.url) {
+                return;
+            }
+
+            // Display selected image
+            window.SegmentationView.showImage(
+                resultImage,
+                `${selectedMode.url}?t=${Date.now()}`
+            );
+
+            resultTitle.textContent = selectedMode.title;
+
+            // Only one button can be active
+            overlayButton.classList.toggle("active", mode === "overlay");
+            maskButton.classList.toggle("active", mode === "mask");
+            traversabilityButton.classList.toggle(
+                "active",
+                mode === "traversability"
+            );
         }
 
-        window.SegmentationView.showImageMode(
-            resultImage,
-            resultTitle,
-            overlayButton,
-            maskButton,
-            overlayUrl,
-            "Segmentation overlay"
-        );
-    });
+        overlayButton.addEventListener("click", function () {
+            setResultView("overlay");
+        });
 
-    maskButton.addEventListener("click", function () {
-        if (!maskUrl) {
-            return;
-        }
+        maskButton.addEventListener("click", function () {
+            setResultView("mask");
+        });
 
-        window.SegmentationView.showImageMode(
-            resultImage,
-            resultTitle,
-            maskButton,
-            overlayButton,
-            maskUrl,
-            "Segmentation mask"
-        );
-    });
+        traversabilityButton.addEventListener("click", function () {
+            setResultView("traversability");
+        });
+
 
 
     /* =======

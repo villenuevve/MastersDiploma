@@ -941,3 +941,241 @@ body {
         font-size: 15px !important;
     }
 }
+
+/* ================= OBSTACLE ANALYSIS ================= */
+
+.obstacle-section {
+    margin-top: 34px;
+}
+
+.obstacle-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin-bottom: 24px;
+}
+
+.obstacle-metric {
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.obstacle-metric span {
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.obstacle-metric strong {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 30px;
+    font-weight: 600;
+}
+
+.obstacle-content-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 26px;
+}
+
+.obstacle-hint {
+    margin: -8px 0 18px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.obstacle-group-title {
+    margin: 20px 0 10px;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.obstacle-group-title:first-child {
+    margin-top: 0;
+}
+
+.obstacle-item {
+    width: 100%;
+    min-width: 0;
+    margin-bottom: 9px;
+    padding: 13px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-align: left;
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.obstacle-item:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.obstacle-item-main {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.obstacle-item-main strong {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.obstacle-item-details {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.obstacle-item-meta {
+    flex-shrink: 0;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.obstacle-category {
+    flex-shrink: 0;
+    padding: 4px 7px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+}
+
+.obstacle-category.dynamic {
+    color: #e6a36f;
+    border-color: rgba(230, 163, 111, 0.35);
+}
+
+.obstacle-category.static {
+    color: var(--blue);
+    border-color: rgba(100, 160, 220, 0.35);
+}
+
+.obstacle-category.environment {
+    color: var(--accent);
+    border-color: rgba(67, 214, 189, 0.35);
+}
+
+.obstacle-empty {
+    padding: 14px 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.obstacle-disclaimer {
+    margin: 18px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+@media (max-width: 800px) {
+    .obstacle-content-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 620px) {
+    .obstacle-summary {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .obstacle-metric {
+        padding: 16px 18px;
+    }
+
+    .obstacle-metric strong {
+        font-size: 25px;
+    }
+
+    .obstacle-item {
+        flex-wrap: wrap;
+    }
+}
+
+
+
+/* ================= TRAVERSABILITY MAP UI ================= */
+
+.traversability-legend {
+    margin: 18px 0 26px;
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.traversability-legend h3 {
+    margin: 0 0 16px;
+    color: var(--text);
+    font-size: 18px;
+}
+
+.traversability-legend-items {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 13px 24px;
+}
+
+.traversability-legend-items > div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.traversability-color {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 15px;
+    border-radius: 4px;
+}
+
+.traversability-color.high {
+    background: rgb(65, 180, 110);
+}
+
+.traversability-color.medium {
+    background: rgb(235, 205, 65);
+}
+
+.traversability-color.low {
+    background: rgb(240, 145, 55);
+}
+
+.traversability-color.blocked {
+    background: rgb(220, 65, 65);
+}
+
+.traversability-legend p {
+    margin: 17px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+@media (max-width: 620px) {
+    .traversability-legend-items {
+        grid-template-columns: 1fr;
+    }
+}

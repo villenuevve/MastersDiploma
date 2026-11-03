@@ -18,6 +18,20 @@
         }
     }
 
+    function createElement(tag, text, styles = "") {
+        const element = document.createElement(tag);
+
+        if (text !== undefined && text !== null) {
+            element.textContent = String(text);
+        }
+
+        if (styles) {
+            element.style.cssText = styles;
+        }
+
+        return element;
+    }
+
     function renderHistory() {
         const container = document.getElementById("historyList");
         if (!container) return;
@@ -26,40 +40,121 @@
         container.replaceChildren();
 
         if (items.length === 0) {
-            const empty = document.createElement("p");
-            empty.textContent =
-                "No analyses yet. Run segmentation to build your history.";
-            empty.style.color = "#667085";
-            container.appendChild(empty);
+            container.appendChild(
+                createElement(
+                    "p",
+                    "No analyses yet. Run segmentation to build your history.",
+                    "color:#667085;"
+                )
+            );
             return;
         }
 
-        items.forEach(item => {
-            const card = document.createElement("div");
-            card.style.cssText =
-                "padding:14px 0;border-bottom:1px solid #e5e7eb;";
+        items.forEach((item, index) => {
+            const card = createElement(
+                "div",
+                undefined,
+                "padding:16px 0;border-bottom:1px solid #e5e7eb;"
+            );
 
-            const name = document.createElement("strong");
-            name.textContent = String(item.filename || "image");
+            const header = createElement(
+                "div",
+                undefined,
+                "display:flex;justify-content:space-between;" +
+                "align-items:center;gap:12px;flex-wrap:wrap;"
+            );
 
-            const details = document.createElement("p");
-            details.style.cssText =
-                "margin-top:6px;font-size:13px;line-height:1.7;color:#667085;";
+            header.appendChild(
+                createElement(
+                    "strong",
+                    `${index + 1}. ${item.filename || "image"}`,
+                    "font-size:15px;"
+                )
+            );
+
+            header.appendChild(
+                createElement(
+                    "span",
+                    item.date || "Unknown date",
+                    "font-size:12px;color:#667085;"
+                )
+            );
+
+            const details = createElement(
+                "p",
+                undefined,
+                "margin-top:8px;font-size:13px;line-height:1.8;" +
+                "color:#667085;"
+            );
 
             const width = Number(item.width) || 0;
             const height = Number(item.height) || 0;
             const inference = Number(item.inference) || 0;
 
             details.textContent =
-                `${String(item.date || "Unknown date")} · ` +
-                `${width} × ${height} · ${inference.toFixed(2)} ms`;
+                `Resolution: ${width} × ${height} · ` +
+                `Inference: ${inference.toFixed(2)} ms`;
 
-            const dominant = document.createElement("p");
-            dominant.style.cssText = "font-size:13px;margin-top:4px;";
-            dominant.textContent =
-                `Dominant class: ${String(item.dominantClass || "None")}`;
+            const model = createElement(
+                "p",
+                `Model: ${item.model || "Unknown"} · ` +
+                `Device: ${item.device || "Unknown"}`,
+                "font-size:13px;color:#667085;margin-top:3px;" +
+                "overflow-wrap:anywhere;"
+            );
 
-            card.append(name, details, dominant);
+            const classes = Array.isArray(item.classes)
+                ? item.classes
+                : [];
+
+            const summary = createElement(
+                "p",
+                `Detected classes: ${item.classCount ?? classes.length} · ` +
+                `Dominant class: ${item.dominantClass || "None"}`,
+                "font-size:13px;margin-top:5px;"
+            );
+
+            card.append(header, details, model, summary);
+
+            if (classes.length > 0) {
+                const toggle = createElement(
+                    "button",
+                    "Show detected classes",
+                    "margin-top:8px;padding:7px 12px;border:1px solid " +
+                    "#667085;border-radius:6px;background:#344054;" +
+                    "color:#ffffff;cursor:pointer;font-size:12px;"
+                );
+
+                const classList = createElement(
+                    "div",
+                    undefined,
+                    "display:none;margin-top:10px;padding:10px 12px;" +
+                    "background:#f8fafc;border-radius:8px;"
+                );
+
+                classes.forEach(item => {
+                    const row = createElement(
+                        "div",
+                        `${item.name || "Unknown"} — ` +
+                        `${Number(item.percentage || 0).toFixed(2)}%`,
+                        "font-size:12px;padding:4px 0;color:#475467;"
+                    );
+
+                    classList.appendChild(row);
+                });
+
+                toggle.addEventListener("click", () => {
+                    const isHidden = classList.style.display === "none";
+
+                    classList.style.display = isHidden ? "block" : "none";
+                    toggle.textContent = isHidden
+                        ? "Hide detected classes"
+                        : "Show detected classes";
+                });
+
+                card.append(toggle, classList);
+            }
+
             container.appendChild(card);
         });
     }
@@ -86,9 +181,16 @@
             width: Number(data.original_width) || 0,
             height: Number(data.original_height) || 0,
             inference: Number(data.inference_time_ms) || 0,
+            model: String(data.model || "Unknown"),
+            device: String(data.device || "Unknown"),
+            classCount: classes.length,
             dominantClass: dominant
                 ? String(dominant.name || "Unknown")
-                : "None"
+                : "None",
+            classes: classes.map(item => ({
+                name: String(item.name || "Unknown"),
+                percentage: Number(item.percentage) || 0
+            }))
         };
 
         const items = [entry, ...readHistory()].slice(0, MAX_ITEMS);

@@ -42,3 +42,6 @@ results/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local archive and experimental artifacts
+MastersDiploma/archive/

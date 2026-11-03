@@ -9,10 +9,10 @@ from transformers import (
     SegformerForSemanticSegmentation,
 )
 
-MODEL_NAME = "nvidia/segformer-b2-finetuned-cityscapes-1024-1024"
+MODEL_NAME = "nvidia/segformer-b3-finetuned-cityscapes-1024-1024"
 
 # Limit the input size to avoid excessive memory consumption.
-MAX_INPUT_SIDE = 1280
+MAX_INPUT_SIDE = 1600
 
 if torch.backends.mps.is_available():
     DEVICE = torch.device("mps")
@@ -21,15 +21,35 @@ elif torch.cuda.is_available():
 else:
     DEVICE = torch.device("cpu")
 
-processor = SegformerImageProcessor.from_pretrained(MODEL_NAME)
+# Model and processor are loaded only when inference is requested.
+processor = None
+model = None
 
-# Keep the processor's standard resizing enabled.
-processor.do_resize = False
-processor.do_pad = False
 
-model = SegformerForSemanticSegmentation.from_pretrained(MODEL_NAME)
-model.to(DEVICE)
-model.eval()
+def load_model():
+    global processor, model
+
+    if model is not None and processor is not None:
+        return
+
+    print(f"Loading model: {MODEL_NAME}")
+    print(f"Device: {DEVICE}")
+
+    loaded_processor = SegformerImageProcessor.from_pretrained(MODEL_NAME)
+    loaded_processor.do_resize = False
+    loaded_processor.do_pad = False
+
+    loaded_model = SegformerForSemanticSegmentation.from_pretrained(
+        MODEL_NAME
+    )
+    loaded_model.to(DEVICE)
+    loaded_model.eval()
+
+    processor = loaded_processor
+    model = loaded_model
+
+    print("Model loaded successfully.")
+
 
 CITYSCAPES_CLASSES = [
     "road", "sidewalk", "building", "wall", "fence",
@@ -62,6 +82,8 @@ CITYSCAPES_COLORS = np.array([
 
 
 def predict_mask(image: Image.Image, return_stats=False):
+    load_model()
+
     image = image.convert("RGB")
     original_width, original_height = image.size
 
@@ -140,6 +162,7 @@ def predict_mask(image: Image.Image, return_stats=False):
 
     return mask, stats
 
+
 def colorize_mask(mask: np.ndarray):
     colored = np.zeros(
         (mask.shape[0], mask.shape[1], 3),
@@ -166,6 +189,7 @@ def get_detected_classes(mask: np.ndarray):
 
     return detected
 
+
 def create_traversability_map(mask: np.ndarray):
     """
     Create a heuristic traversability map from Cityscapes class IDs.
@@ -179,10 +203,10 @@ def create_traversability_map(mask: np.ndarray):
     traversability = np.zeros(mask.shape, dtype=np.uint8)
 
     class_weights = {
-        0: 255,  # road
-        1: 220,  # sidewalk
-        8: 70,   # vegetation
-        9: 150,  # terrain
+        0: 255,
+        1: 220,
+        8: 70,
+        9: 150,
     }
 
     for class_id, weight in class_weights.items():
@@ -202,8 +226,12 @@ def colorize_traversability_map(traversability: np.ndarray):
     )
 
     colored[traversability == 0] = [220, 65, 65]
-    colored[(traversability > 0) & (traversability < 100)] = [240, 145, 55]
-    colored[(traversability >= 100) & (traversability < 200)] = [235, 205, 65]
+    colored[
+        (traversability > 0) & (traversability < 100)
+    ] = [240, 145, 55]
+    colored[
+        (traversability >= 100) & (traversability < 200)
+    ] = [235, 205, 65]
     colored[traversability >= 200] = [65, 180, 110]
 
     return colored

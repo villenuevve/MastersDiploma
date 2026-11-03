@@ -12,6 +12,7 @@ from backend.segmentation import (
     CITYSCAPES_COLORS,
 )
 from backend.visualization import save_mask, save_class_ids, create_overlay
+from backend.obstacle_analysis import analyze_obstacles
 
 from PIL import Image, UnidentifiedImageError
 from pathlib import Path
@@ -184,6 +185,8 @@ async def predict(file: UploadFile = File(...)):
             ),
         })
 
+    obstacle_analysis = analyze_obstacles(mask)
+
     return JSONResponse({
         "filename": file.filename or "image",
         "size_bytes": len(content),
@@ -204,6 +207,9 @@ async def predict(file: UploadFile = File(...)):
             int(x) for x in unique_classes
         ],
         "detected_classes": detected_classes,
+        "obstacle_summary": obstacle_analysis["obstacle_summary"],
+        "obstacles": obstacle_analysis["obstacles"],
+        "environment_objects": obstacle_analysis["environment_objects"],
         "class_count": len(detected_classes),
 
         "inference_time_ms": round(inference_time_ms, 2),
@@ -457,8 +463,9 @@ def batch_analytics():
     """Return aggregate analytics for the 120-image batch."""
 
     summary_path = (
-        RESULTS_DIR
-        / "batch_predictions"
+        BASE_DIR
+        / "archive"
+        / "batch_reports"
         / "batch_analysis_summary.json"
     )
 
