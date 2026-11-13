@@ -306,11 +306,37 @@
 
             const sample = await response.json();
 
-            images[0].src = BASE + sample.image_url;
-            images[1].src =
-                `${BASE}/evaluation/ground-truth/val/${encodeURIComponent(filename)}`;
-            images[2].src =
-                `${BASE}/evaluation/prediction/val/${encodeURIComponent(filename)}`;
+            const imageUrls = [
+                BASE + sample.image_url,
+                `${BASE}/evaluation/ground-truth/val/${encodeURIComponent(filename)}`,
+                `${BASE}/evaluation/prediction/val/${encodeURIComponent(filename)}`
+            ];
+
+            const imageResponses = await Promise.all(
+                imageUrls.map(url => fetch(url))
+            );
+
+            const failedResponse = imageResponses.find(response => !response.ok);
+            if (failedResponse) {
+                throw new Error(
+                    `Image API returned HTTP ${failedResponse.status}`
+                );
+            }
+
+            const imageBlobs = await Promise.all(
+                imageResponses.map(response => response.blob())
+            );
+
+            images.forEach((img, index) => {
+                if (img.dataset.objectUrl) {
+                    URL.revokeObjectURL(img.dataset.objectUrl);
+                }
+
+                const objectUrl = URL.createObjectURL(imageBlobs[index]);
+                img.dataset.objectUrl = objectUrl;
+                img.src = objectUrl;
+                img.alt = "Evaluation comparison";
+            });
 
             // Detect missing images separately rather than silently showing blank panels.
             const checks = images.map(img => new Promise(resolve => {

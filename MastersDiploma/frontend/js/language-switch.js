@@ -106,6 +106,63 @@
         "person": "людина"
     });
 
+
+    Object.assign(uk, {
+        "DATA MANAGEMENT": "КЕРУВАННЯ ДАНИМИ",
+        "Dataset Management": "Керування датасетами",
+        "Browse datasets, inspect stored images and upload new images for segmentation.": "Переглядайте датасети, збережені зображення та завантажуйте нові для сегментації.",
+        "Refresh": "Оновити",
+        "Select dataset": "Оберіть датасет",
+        "Loading datasets...": "Завантаження датасетів...",
+        "Select a dataset to view its contents.": "Оберіть датасет, щоб переглянути його вміст.",
+        "Upload images to selected dataset": "Завантажити зображення до обраного датасету",
+        "Upload and process images": "Завантажити та обробити зображення",
+        "Supported formats: JPG, JPEG and PNG. Maximum size: 20 MB per image.": "Підтримувані формати: JPG, JPEG та PNG. Максимальний розмір одного зображення — 20 МБ.",
+        "Image": "Зображення",
+        "Resolution": "Роздільна здатність",
+        "File size": "Розмір файлу",
+        "Segmentation mask": "Маска сегментації",
+        "Select a dataset to view images.": "Оберіть датасет, щоб переглянути зображення.",
+        "SYSTEM ADMINISTRATION": "АДМІНІСТРУВАННЯ СИСТЕМИ",
+        "User Management": "Керування користувачами",
+        "Manage registered accounts, assign roles and control account access.": "Керуйте обліковими записами, призначайте ролі та контролюйте доступ до системи.",
+        "ID": "ID",
+        "Username": "Ім'я користувача",
+        "Email": "Електронна пошта",
+        "Role": "Роль",
+        "Status": "Статус",
+        "Registration date": "Дата реєстрації",
+        "Loading users...": "Завантаження користувачів...",
+        "Your own role and account status cannot be changed from this panel.": "Власну роль і статус облікового запису не можна змінити з цієї панелі.",
+        "Active": "Активний",
+        "Inactive": "Неактивний",
+        "Deactivate": "Деактивувати",
+        "Activate": "Активувати",
+        "User": "Користувач",
+        "Administrator": "Адміністратор",
+        "Technician": "Технік",
+        "No images in this dataset.": "У цьому датасеті поки немає зображень.",
+        "No users found.": "Користувачів не знайдено.",
+        "Loading images...": "Завантаження зображень...",
+        "Dataset": "Датасет",
+        "Images": "Зображення",
+        "Uploaded": "Завантажено",
+        "Failed": "Помилок",
+        "Please select a dataset first.": "Спочатку оберіть датасет.",
+        "Please select at least one image.": "Оберіть хоча б одне зображення.",
+        "Dataset list updated.": "Список датасетів оновлено.",
+        "User list updated.": "Список користувачів оновлено.",
+        "Role updated successfully.": "Роль успішно змінено.",
+        "Account status updated successfully.": "Статус облікового запису успішно змінено.",
+        "Dataset images loaded.": "Зображення датасету завантажено.",
+        "Upload completed.": "Завантаження завершено.",
+        "Processing...": "Обробка...",
+        "Failed to load data.": "Не вдалося завантажити дані.",
+        "Unknown error.": "Невідома помилка.",
+        "Yes": "Так",
+        "No": "Ні"
+    });
+
     const en = Object.fromEntries(
         Object.entries(uk).map(([english, ukrainian]) => [ukrainian, english])
     );
@@ -154,20 +211,26 @@
             const original = originalTexts.get(node);
             const normalized = original.replace(/\s+/g, " ").trim();
 
+            let translatedValue;
+
             if (normalized === "Upload an image captured by the robot camera and") {
-                node.nodeValue = language === "uk"
+                translatedValue = language === "uk"
                     ? "Завантажте зображення, отримане з камери робота, та"
                     : original;
             } else if (normalized === "analyze its semantic structure using the semantic") {
-                node.nodeValue = language === "uk"
+                translatedValue = language === "uk"
                     ? "проаналізуйте його семантичну структуру за допомогою моделі"
                     : original;
             } else if (normalized === "segmentation model.") {
-                node.nodeValue = language === "uk"
+                translatedValue = language === "uk"
                     ? "семантичної сегментації."
                     : original;
             } else {
-                node.nodeValue = translate(originalTexts.get(node));
+                translatedValue = translate(original);
+            }
+
+            if (node.nodeValue !== translatedValue) {
+                node.nodeValue = translatedValue;
             }
         });
 
@@ -186,7 +249,11 @@
                     saved[attribute] = element.getAttribute(attribute);
                 }
 
-                element.setAttribute(attribute, translate(saved[attribute]));
+                const translatedAttribute = translate(saved[attribute]);
+
+                if (element.getAttribute(attribute) !== translatedAttribute) {
+                    element.setAttribute(attribute, translatedAttribute);
+                }
             });
         });
 
@@ -207,8 +274,5 @@
 
     updatePage();
 
-    new MutationObserver(() => updatePage()).observe(document.body, {
-        childList: true,
-        subtree: true
-    });
+    // MutationObserver temporarily disabled for flicker diagnosis.
 })();

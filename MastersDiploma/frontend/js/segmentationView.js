@@ -9,7 +9,11 @@
 
     function showImage(imageElement, url) {
         if (imageElement && url) {
-            imageElement.src = url;
+            if (window.Auth && typeof window.Auth.loadProtectedImage === "function") {
+                window.Auth.loadProtectedImage(imageElement, url);
+            } else {
+                imageElement.src = url;
+            }
         }
     }
 

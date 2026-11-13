@@ -53,7 +53,236 @@
 </header>
 
 
-<main>
+<section id="authSection" class="auth-section">
+    <div class="auth-card">
+        <div class="auth-heading">
+            <span class="auth-eyebrow">SEMANTIC SEGMENTATION ROBOT</span>
+            <h2 id="authTitle">Вхід до системи</h2>
+            <p id="authDescription">Увійдіть, щоб продовжити роботу із системою.</p>
+        </div>
+
+        <form id="authForm" class="auth-form">
+            <label id="usernameField" class="auth-field" hidden>
+                <span>Ім'я користувача</span>
+                <input id="authUsername" name="username" type="text"
+                       minlength="3" maxlength="50" autocomplete="username">
+            </label>
+
+            <label class="auth-field">
+                <span>Email</span>
+                <input id="authEmail" name="email" type="email"
+                       maxlength="120" autocomplete="email" required>
+            </label>
+
+            <label class="auth-field">
+                <span>Пароль</span>
+                <input id="authPassword" name="password" type="password"
+                       minlength="8" maxlength="128"
+                       autocomplete="current-password" required>
+            </label>
+
+            <button id="authSubmit" class="auth-submit" type="submit">Увійти</button>
+        </form>
+
+        <p id="authMessage" class="auth-message" role="status" aria-live="polite"></p>
+
+        <button id="authModeToggle" class="auth-mode-toggle" type="button">
+            Немає облікового запису? Зареєструватися
+        </button>
+    </div>
+</section>
+
+<div id="accountBar" class="account-bar" hidden>
+    <div class="account-info">
+        <span class="account-caption">Поточний користувач</span>
+        <strong id="accountUsername"></strong>
+        <span id="accountRole" class="account-role"></span>
+    </div>
+    <button id="logoutButton" class="logout-button" type="button">Вийти</button>
+</div>
+
+
+
+<main id="appMain" hidden>
+
+    <!-- ================= ROLE-BASED PANELS ================= -->
+
+    <section id="datasetPanel" class="info-card role-panel" hidden>
+        <div class="role-panel-heading">
+            <div>
+                <span class="role-panel-eyebrow">DATA MANAGEMENT</span>
+                <h2>Dataset Management</h2>
+                <p>Browse datasets, inspect stored images and upload new images for segmentation.</p>
+            </div>
+            <button id="refreshDatasetsButton" class="role-action-button" type="button">
+                Refresh
+            </button>
+        </div>
+
+        <div class="role-panel-controls">
+            <label for="datasetSelect">Select dataset</label>
+            <select id="datasetSelect">
+                <option value="">Loading datasets...</option>
+            </select>
+        </div>
+
+        <div id="datasetSummary" class="role-panel-summary">
+            Select a dataset to view its contents.
+        </div>
+
+        <div class="dataset-management-toolbar">
+            <button id="createDatasetButton" class="role-action-button" type="button">
+                Create dataset
+            </button>
+            <button id="editDatasetButton" class="role-action-button" type="button">
+                Edit dataset
+            </button>
+            <button id="createSplitsButton" class="role-action-button" type="button">
+                Create Train / Val / Test
+            </button>
+            <button id="deleteDatasetButton" class="role-action-button danger-button" type="button" hidden>
+                Delete dataset
+            </button>
+        </div>
+
+        <div class="dataset-split-filter">
+            <label for="datasetImageSearch">Search images</label>
+            <input
+                id="datasetImageSearch"
+                type="search"
+                autocomplete="off"
+            >
+
+            <label for="groundTruthFilter">Ground Truth</label>
+            <select id="groundTruthFilter">
+                <option value="all">All images</option>
+                <option value="with">With Ground Truth</option>
+                <option value="without">Without Ground Truth</option>
+            </select>
+
+            <label for="datasetSplitFilter">Filter by split</label>
+            <select id="datasetSplitFilter">
+                <option value="">All images</option>
+            </select>
+        </div>
+
+        <div class="dataset-upload-area">
+            <label for="datasetFiles">Upload images to selected dataset</label>
+            <input
+                id="datasetFiles"
+                type="file"
+                accept="image/jpeg,image/png"
+                multiple
+            >
+            <button id="uploadDatasetButton" class="role-action-button" type="button">
+                Upload and process images
+            </button>
+            <p class="role-panel-hint">Supported formats: JPG, JPEG and PNG. Maximum size: 20 MB per image.</p>
+        </div>
+
+        <p id="datasetMessage" class="role-panel-message" aria-live="polite"></p>
+
+        <div class="role-table-wrapper">
+            <table class="role-table">
+                <thead>
+                    <tr>
+                        <th>Image</th>
+                        <th>Resolution</th>
+                        <th>File size</th>
+                        <th>Prediction mask</th>
+                        <th>Ground Truth</th>
+                        <th>Split</th>
+                        <th>Move to dataset</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="datasetImagesBody">
+                    <tr><td colspan="8">Select a dataset to view images.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section id="adminPanel" class="info-card role-panel" hidden>
+        <div class="role-panel-heading">
+            <div>
+                <span class="role-panel-eyebrow">SYSTEM ADMINISTRATION</span>
+                <h2>User Management</h2>
+                <p>Manage registered accounts, assign roles and control account access.</p>
+            </div>
+            <div class="role-panel-actions">
+                <button id="toggleCreateUserButton" class="role-action-button" type="button">
+                    Add User
+                </button>
+                <button id="refreshUsersButton" class="role-action-button" type="button">
+                    Refresh
+                </button>
+            </div>
+        </div>
+
+        <p id="usersMessage" class="role-panel-message" aria-live="polite"></p>
+
+        <form id="adminCreateUserForm" class="admin-create-user-form" hidden>
+            <h3>Create user account</h3>
+
+            <label>
+                Username
+                <input id="newUsername" name="username"
+                    type="text" minlength="3" maxlength="50"
+                    pattern="[A-Za-z0-9_. -]+" required>
+            </label>
+
+            <label>
+                Email
+                <input id="newUserEmail" name="email"
+                    type="email" maxlength="120" required>
+            </label>
+
+            <label>
+                Password
+                <input id="newUserPassword" name="password"
+                    type="password" minlength="8" maxlength="128" required>
+            </label>
+
+            <label>
+                Role
+                <select id="newUserRole" name="role" required>
+                    <option value="User">User</option>
+                    <option value="Technician">Technician</option>
+                    <option value="Administrator">Administrator</option>
+                </select>
+            </label>
+
+            <button id="createUserSubmitButton"
+                class="role-action-button" type="submit">
+                Create account
+            </button>
+        </form>
+
+        <div class="role-table-wrapper">
+            <table class="role-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Registration date</th>
+                    </tr>
+                </thead>
+                <tbody id="usersTableBody">
+                    <tr><td colspan="6">Loading users...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p class="role-panel-hint">
+            Your own role and account status cannot be changed from this panel.
+        </p>
+    </section>
+
+
 
     <!-- ================= TITLE ================= -->
 
@@ -105,6 +334,7 @@
             type="file"
             id="fileInput"
             accept="image/jpeg,image/jpg,image/png"
+            multiple
         >
 
 
@@ -119,6 +349,7 @@
             <button
                 class="predict-button"
                 id="predictButton"
+                type="button"
                 disabled
             >
                 Run segmentation
@@ -143,6 +374,16 @@
             class="error"
             id="error"
         ></div>
+
+        <div id="batchProgress" class="batch-progress" style="display:none;"></div>
+
+        <section id="batchResults" class="batch-results" style="display:none;">
+            <div class="batch-results-header">
+                <h2>Batch Segmentation Results</h2>
+                <p id="batchSummary"></p>
+            </div>
+            <div id="batchResultsGrid" class="batch-results-grid"></div>
+        </section>
 
     </section>
 
@@ -185,6 +426,11 @@
 
                 </div>
 
+                <div class="comparison-selector comparison-selector-placeholder"
+                     aria-hidden="true">
+                    <span>Display:</span>
+                    <span class="selector-placeholder">Original image</span>
+                </div>
 
                 <div class="image-wrapper">
 
@@ -198,30 +444,63 @@
             </div>
 
 
-            <!-- RESULT -->
+            <!-- COMPARISON PANEL 1 -->
 
             <div class="image-card">
 
-                <div class="image-card-header">
+                <div class="image-card-header comparison-header">
 
-                    <h3 id="resultTitle">
-                        Segmentation overlay
-                    </h3>
+                    <h3 id="resultTitle">Segmentation overlay</h3>
 
-                    <span class="badge">
-                        Prediction
-                    </span>
+                    <span class="badge">View 1</span>
 
                 </div>
 
+                <div class="comparison-selector">
+                    <label for="comparisonSelect1">Display:</label>
+                    <select id="comparisonSelect1">
+                        <option value="overlay">Overlay</option>
+                        <option value="mask">Segmentation Mask</option>
+                        <option value="traversability">Traversability Map</option>
+                        <option value="confidence">Confidence Map</option>
+                        <option value="risk">Risk Map</option>
+                        <option value="safe_corridor">Safe Corridor</option>
+                    </select>
+                </div>
 
                 <div class="image-wrapper">
+                    <img id="resultImage" alt="First comparison result">
+                </div>
 
-                    <img
-                        id="resultImage"
-                        alt="Segmentation result"
-                    >
+            </div>
 
+
+            <!-- COMPARISON PANEL 2 -->
+
+            <div class="image-card">
+
+                <div class="image-card-header comparison-header">
+
+                    <h3 id="comparisonTitle2">Segmentation mask</h3>
+
+                    <span class="badge">View 2</span>
+
+                </div>
+
+                <div class="comparison-selector">
+                    <label for="comparisonSelect2">Display:</label>
+                    <select id="comparisonSelect2">
+                        <option value="overlay">Overlay</option>
+                        <option value="mask" selected>Segmentation Mask</option>
+                        <option value="traversability">Traversability Map</option>
+                        <option value="confidence">Confidence Map</option>
+                        <option value="risk">Risk Map</option>
+                        <option value="safe_corridor">Safe Corridor</option>
+                    </select>
+                </div>
+
+                <div class="image-wrapper">
+                    <img id="comparisonImage2" alt="Second comparison result">
                 </div>
 
             </div>
@@ -259,6 +538,18 @@
                     Traversability
                 </button>
 
+                <button class="view-button" id="confidenceButton" type="button" disabled>
+                    Confidence Map
+                </button>
+
+                <button class="view-button" id="riskButton" type="button" disabled>
+                    Risk Map
+                </button>
+
+                <button class="view-button" id="safeCorridorButton" type="button" disabled>
+                    Safe Corridor
+                </button>
+
             </div>
 
 
@@ -292,12 +583,86 @@
                     ↓ Download Traversability Map
                 </a>
 
+                <a class="download-button secondary" id="downloadConfidence"
+                   href="#" download style="display:none;">
+                    ↓ Download Confidence Map
+                </a>
+
+                <a class="download-button secondary" id="downloadRiskMap"
+                   href="#" download style="display:none;">
+                    ↓ Download Risk Map
+                </a>
+
+                <a class="download-button secondary" id="downloadSafeCorridor"
+                   href="#" download style="display:none;">
+                    ↓ Download Safe Corridor
+                </a>
+
+
+                <a
+                    class="download-button secondary"
+                    id="downloadArchive"
+                    href="#"
+                    style="display:none;"
+                >
+                    ↓ Download All Results (ZIP)
+                </a>
+
             </div>
 
         </div>
 
 
-        <div class="traversability-legend" id="traversabilityLegend" style="display:none;">
+        <div class="traversability-legend mode-legend" id="confidenceLegend" style="display:none;">
+            <h3>Confidence Map Legend</h3>
+
+            <div class="traversability-legend-items">
+                <div><span class="confidence-color low"></span> <span id="confidenceLowLegend">Low confidence — below 85%</span></div>
+                <div><span class="confidence-color medium"></span> <span id="confidenceMediumLegend">Medium confidence — 85–99%</span></div>
+                <div><span class="confidence-color high"></span> <span id="confidenceHighLegend">High confidence — 99% and above</span></div>
+            </div>
+
+            <div class="confidence-controls">
+                <h4>Confidence Thresholds</h4>
+
+                <div class="confidence-control-row">
+                    <label for="confidenceLowThreshold">
+                        Low threshold: <strong id="confidenceLowThresholdValue">85%</strong>
+                    </label>
+                    <input id="confidenceLowThreshold" type="range" min="0" max="99" step="1" value="85">
+                </div>
+
+                <div class="confidence-control-row">
+                    <label for="confidenceHighThreshold">
+                        High threshold: <strong id="confidenceHighThresholdValue">99%</strong>
+                    </label>
+                    <input id="confidenceHighThreshold" type="range" min="1" max="100" step="1" value="99">
+                </div>
+
+                <button type="button" id="recalculateConfidence" class="recalculate-button">
+                    Recalculate Map
+                </button>
+
+                <p id="confidenceStatus" class="confidence-status">
+                    Adjust thresholds and recalculate the map.
+                </p>
+            </div>
+
+            <p>
+                Confidence represents the maximum softmax score across classes.
+                It is not a calibrated probability that the prediction is correct.
+            </p>
+        </div>
+
+        <div class="info-card" id="confidenceMetrics" style="display:none; margin-top:16px;">
+            <h3>Confidence Metrics</h3>
+            <p>Mean confidence: <strong id="meanConfidence">—</strong></p>
+            <p>Low-confidence pixels: <strong id="lowConfidence">—</strong></p>
+            <p>Medium-confidence pixels: <strong id="mediumConfidence">—</strong></p>
+            <p>High-confidence pixels: <strong id="highConfidence">—</strong></p>
+        </div>
+
+        <div class="traversability-legend mode-legend" id="traversabilityLegend" style="display:none;">
             <h3>Traversability Legend</h3>
             <div class="traversability-legend-items">
                 <div><span class="traversability-color high"></span> High traversability — road, sidewalk</div>
@@ -310,6 +675,137 @@
                 It does not account for physical distance, slope, surface condition,
                 obstacle height or robot dimensions.
             </p>
+
+            <div class="traversability-settings" id="traversabilitySettings">
+                <h3>Obstacle Inflation</h3>
+
+                <div class="radius-control">
+                    <label for="obstacleRadius">
+                        Obstacle inflation radius:
+                        <strong><span id="obstacleRadiusValue">12</span> px</strong>
+                    </label>
+
+                    <input
+                        type="range"
+                        id="obstacleRadius"
+                        min="4"
+                        max="30"
+                        step="1"
+                        value="12"
+                    />
+
+                    <div class="radius-range-labels">
+                        <span>4 px</span>
+                        <span>30 px</span>
+                    </div>
+                </div>
+
+                <button
+                    type="button"
+                    class="recalculate-button"
+                    id="recalculateTraversability"
+                >
+                    Recalculate Map
+                </button>
+
+                <p id="traversabilityStatus" class="traversability-status"
+                   role="status" aria-live="polite">
+                    Adjust the radius and recalculate the map.
+                </p>
+
+                <div class="traversability-statistics" id="traversabilityStatistics">
+                    <h3>Traversability Statistics</h3>
+
+                    <div class="traversability-stat-row">
+                        <span><span class="traversability-color high"></span> High</span>
+                        <strong>
+                            <span id="travHighPercentage">—</span>
+                            <small id="travHighPixels">—</small>
+                        </strong>
+                    </div>
+
+                    <div class="traversability-stat-row">
+                        <span><span class="traversability-color medium"></span> Medium</span>
+                        <strong>
+                            <span id="travMediumPercentage">—</span>
+                            <small id="travMediumPixels">—</small>
+                        </strong>
+                    </div>
+
+                    <div class="traversability-stat-row">
+                        <span><span class="traversability-color low"></span> Low</span>
+                        <strong>
+                            <span id="travLowPercentage">—</span>
+                            <small id="travLowPixels">—</small>
+                        </strong>
+                    </div>
+
+                    <div class="traversability-stat-row">
+                        <span><span class="traversability-color blocked"></span>
+                            Non-traversable / unknown</span>
+                        <strong>
+                            <span id="travBlockedPercentage">—</span>
+                            <small id="travBlockedPixels">—</small>
+                        </strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="traversability-legend mode-legend" id="riskLegend" style="display:none;">
+            <h3>Risk Map Legend</h3>
+
+            <div class="traversability-legend-items">
+                <div><span class="risk-color low"></span> Low risk — below 30</div>
+                <div><span class="risk-color medium"></span> Medium risk — 30–59</div>
+                <div><span class="risk-color high"></span> High risk — 60 and above</div>
+            </div>
+
+            <p>
+                Risk is a heuristic estimate based on semantic class and model confidence.
+                It does not represent physical distance or calibrated collision probability.
+            </p>
+        </div>
+
+        <div class="info-card" id="riskMetrics" style="display:none; margin-top:16px;">
+            <h3>Risk Map Statistics</h3>
+            <p>Low risk: <strong id="riskLowPercentage">—</strong></p>
+            <p>Medium risk: <strong id="riskMediumPercentage">—</strong></p>
+            <p>High risk: <strong id="riskHighPercentage">—</strong></p>
+            <p>Mean risk: <strong id="meanRisk">—</strong></p>
+            <p>Maximum risk: <strong id="maxRisk">—</strong></p>
+        </div>
+
+        <div class="traversability-legend mode-legend"
+             id="safeCorridorLegend" style="display:none;">
+            <h3>Safe Corridor Legend</h3>
+
+            <div class="traversability-legend-items">
+                <div>
+                    <span class="traversability-color high"></span>
+                    Selected safe corridor
+                </div>
+                <div>
+                    <span class="risk-color medium"></span>
+                    Estimated centerline
+                </div>
+            </div>
+
+            <p>
+                Image-space heuristic. Not a metric trajectory or a guarantee
+                of collision-free motion.
+            </p>
+        </div>
+
+        <div class="info-card" id="safeCorridorMetrics"
+             style="display:none; margin-top:16px;">
+            <h3>Safe Corridor Statistics</h3>
+            <p>Safe corridor found: <strong id="safeCorridorFound">—</strong></p>
+            <p>Corridor area: <strong id="corridorPercentage">—</strong></p>
+            <p>Corridor pixels: <strong id="corridorPixels">—</strong></p>
+            <p>Mean traversability: <strong id="meanTraversability">—</strong></p>
+            <p>Mean risk: <strong id="safeCorridorMeanRisk">—</strong></p>
+            <p>Direction: <strong id="safeCorridorDirection">—</strong></p>
         </div>
 
         <!-- ================= INFORMATION ================= -->
@@ -553,6 +1049,8 @@
 
 
 <script src="js/segmentationView.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/rolePanels.js"></script>
 <script src="js/segmentationModel.js"></script>
 <script src="js/app.js"></script>
 

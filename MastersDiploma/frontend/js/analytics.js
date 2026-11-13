@@ -140,7 +140,7 @@
         );
     }
 
-    window.addEventListener("segmentation-result", event => {
+    window.addEventListener("segmentation-view-selected", event => {
         updateAnalytics(event.detail);
     });
 })();

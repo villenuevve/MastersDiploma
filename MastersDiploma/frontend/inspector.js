@@ -512,7 +512,7 @@
     });
 
     // Receive new segmentation result
-    window.addEventListener("segmentation-result", event => {
+    window.addEventListener("segmentation-view-selected", event => {
         const data = event.detail || {};
 
         classStats = Array.isArray(data.detected_classes)
