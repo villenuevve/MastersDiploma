@@ -5,6 +5,10 @@ from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.inference import load_image_from_bytes
+from backend.depth_estimation import (
+    predict_depth,
+    normalize_depth_for_visualization,
+)
 from backend.segmentation import (
     predict_mask,
     colorize_mask,
@@ -140,6 +144,10 @@ def check_upload_access(upload_id: str, current_user: User, db):
 
 def check_result_access(filename: str, current_user: User, db):
     suffixes = (
+        "_depth.npy",
+        "_depth.png",
+        "_uncertainty.npy",
+        "_uncertainty.png",
         "_safe_corridor.png",
         "_traversability.png",
         "_risk_map.png",
@@ -319,10 +327,25 @@ async def predict(
 
     # Run semantic segmentation
     start_time = perf_counter()
-    mask, segmentation_stats, confidence_map = predict_mask(
-        image, return_stats=True, return_confidence=True
+    (
+        mask,
+        segmentation_stats,
+        confidence_map,
+        uncertainty_map,
+    ) = predict_mask(
+        image,
+        return_stats=True,
+        return_uncertainty=True,
     )
     inference_time_ms = (perf_counter() - start_time) * 1000
+
+    # Estimate relative depth independently of semantic segmentation.
+    depth_map, depth_stats = predict_depth(
+        image,
+        return_stats=True
+    )
+
+    depth_visualization = normalize_depth_for_visualization(depth_map)
 
     # Generate segmentation visualization
     colored_mask = colorize_mask(mask)
@@ -352,6 +375,20 @@ async def predict(
     mean_confidence = float(np.mean(confidence_map))
     low_confidence_percentage = float(np.mean(confidence_map < 0.5) * 100)
 
+    # Normalized predictive entropy: 0 = certain, 1 = maximally uncertain.
+    uncertainty_visualization = (
+        np.clip(uncertainty_map, 0.0, 1.0) * 255
+    ).astype(np.uint8)
+
+    uncertainty_stats = {
+        "method": "normalized_predictive_entropy",
+        "min": round(float(np.min(uncertainty_map)), 4),
+        "max": round(float(np.max(uncertainty_map)), 4),
+        "mean": round(float(np.mean(uncertainty_map)), 4),
+        "median": round(float(np.median(uncertainty_map)), 4),
+        "p95": round(float(np.percentile(uncertainty_map, 95)), 4),
+    }
+
     # Output paths
     mask_path = RESULTS_DIR / f"{safe_stem}_mask.png"
     overlay_path = RESULTS_DIR / f"{safe_stem}_overlay.png"
@@ -362,6 +399,10 @@ async def predict(
     confidence_npy_path = RESULTS_DIR / f"{safe_stem}_confidence.npy"
     risk_map_path = RESULTS_DIR / f"{safe_stem}_risk_map.png"
     safe_corridor_path = RESULTS_DIR / f"{safe_stem}_safe_corridor.png"
+    depth_path = RESULTS_DIR / f"{safe_stem}_depth.png"
+    depth_npy_path = RESULTS_DIR / f"{safe_stem}_depth.npy"
+    uncertainty_path = RESULTS_DIR / f"{safe_stem}_uncertainty.png"
+    uncertainty_npy_path = RESULTS_DIR / f"{safe_stem}_uncertainty.npy"
 
     safe_corridor_analysis = analyze_safe_corridor(
         traversability,
@@ -381,6 +422,10 @@ async def predict(
             confidence_npy_path,
             risk_map_path,
             safe_corridor_path,
+            depth_path,
+            depth_npy_path,
+            uncertainty_path,
+            uncertainty_npy_path,
         ])
 
         # Save segmentation results
@@ -396,6 +441,20 @@ async def predict(
         Image.fromarray(
             safe_corridor_analysis["visualization"]
         ).save(safe_corridor_path)
+
+        # Save relative depth data and its display-only visualization.
+        np.save(depth_npy_path, depth_map.astype(np.float32))
+        Image.fromarray(depth_visualization, mode="L").save(depth_path)
+
+        # Save normalized predictive entropy as visualization and raw data.
+        np.save(
+            uncertainty_npy_path,
+            uncertainty_map.astype(np.float32)
+        )
+        Image.fromarray(
+            uncertainty_visualization,
+            mode="L"
+        ).save(uncertainty_path)
 
         # Save optimized preview
         preview = overlay.convert("RGB")
@@ -589,6 +648,21 @@ async def predict(
             "mean_confidence": round(mean_confidence * 100, 2),
             "low_confidence_percentage": round(low_confidence_percentage, 2),
 
+            "depth_model": depth_stats["model"],
+            "depth_device": depth_stats["device"],
+            "depth_type": depth_stats["depth_type"],
+            "depth_inference_time_ms": depth_stats["inference_time_ms"],
+            "depth_statistics": depth_stats,
+            "depth_file": depth_path.name,
+            "depth_url": f"/results/{depth_path.name}",
+            "depth_raw_file": depth_npy_path.name,
+
+            "uncertainty_method": uncertainty_stats["method"],
+            "uncertainty_statistics": uncertainty_stats,
+            "uncertainty_file": uncertainty_path.name,
+            "uncertainty_url": f"/results/{uncertainty_path.name}",
+            "uncertainty_raw_file": uncertainty_npy_path.name,
+
             "class_ids_file": str(class_ids_path),
             "class_ids_filename": class_ids_path.name,
             "class_ids_base64": class_ids_base64,
@@ -616,6 +690,10 @@ async def predict(
             "confidence_raw": confidence_npy_path.name,
             "risk_map": risk_map_path.name,
             "safe_corridor": safe_corridor_path.name,
+            "depth": depth_path.name,
+            "depth_raw": depth_npy_path.name,
+            "uncertainty": uncertainty_path.name,
+            "uncertainty_raw": uncertainty_npy_path.name,
         }
 
         metadata_path.write_text(
@@ -695,6 +773,10 @@ def download_results_archive(
         "_confidence.npy",
         "_risk_map.png",
         "_safe_corridor.png",
+        "_depth.png",
+        "_depth.npy",
+        "_uncertainty.png",
+        "_uncertainty.npy",
     ]
 
     archive_buffer = BytesIO()

@@ -82,7 +82,7 @@ CITYSCAPES_COLORS = np.array([
 ], dtype=np.uint8)
 
 
-def predict_mask(image: Image.Image, return_stats=False, return_confidence=False):
+def predict_mask(image: Image.Image, return_stats=False, return_confidence=False, return_uncertainty=False):
     load_model()
 
     image = image.convert("RGB")
@@ -125,6 +125,11 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
         dtype=np.float32,
     )
 
+    uncertainty_map = (
+        np.zeros((original_height, original_width), dtype=np.float32)
+        if return_uncertainty else None
+    )
+
     if DEVICE.type == "mps":
         torch.mps.synchronize()
     elif DEVICE.type == "cuda":
@@ -158,6 +163,21 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
 
                 probabilities = torch.softmax(logits, dim=1)
                 tile_confidence = probabilities.max(dim=1).values[0]
+
+                if return_uncertainty:
+                    entropy = -(
+                        probabilities
+                        * torch.log(probabilities.clamp_min(1e-8))
+                    ).sum(dim=1)[0]
+
+                    num_classes = probabilities.shape[1]
+                    tile_uncertainty = (
+                        entropy / np.log(num_classes)
+                    ).clamp(0.0, 1.0)
+                    tile_uncertainty = (
+                        tile_uncertainty.cpu().numpy().astype(np.float32)
+                    )
+
                 tile_mask = logits.argmax(dim=1)[0]
 
                 tile_mask = tile_mask.cpu().numpy().astype(np.uint8)
@@ -200,10 +220,17 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
 
             region_mask[update] = tile_mask[update]
             region_confidence[update] = tile_confidence[update]
+
+            if return_uncertainty:
+                region_uncertainty = uncertainty_map[y0:y1, x0:x1]
+                region_uncertainty[update] = tile_uncertainty[update]
+
             region_score[update] = tile_score[update]
 
             del inputs, outputs, logits, probabilities
             del tile_mask, tile_confidence, tile
+            if return_uncertainty:
+                del entropy, tile_uncertainty
 
     if DEVICE.type == "mps":
         torch.mps.synchronize()
@@ -212,7 +239,7 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-    if not return_stats and not return_confidence:
+    if not return_stats and not return_confidence and not return_uncertainty:
         return mask
 
     total_pixels = int(mask.size)
@@ -246,6 +273,14 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
         "tile_count": total_tiles,
         "detected_classes": detected_classes,
     }
+
+    if return_uncertainty:
+        return (
+            mask,
+            stats,
+            np.clip(confidence_map, 0.0, 1.0),
+            np.clip(uncertainty_map, 0.0, 1.0),
+        )
 
     if return_confidence:
         return mask, stats, np.clip(confidence_map, 0.0, 1.0)

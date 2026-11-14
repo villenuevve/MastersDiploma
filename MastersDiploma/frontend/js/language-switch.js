@@ -163,6 +163,50 @@
         "No": "Ні"
     });
 
+    Object.assign(uk, {
+        "Create dataset": "Створити датасет",
+        "Edit dataset": "Редагувати датасет",
+        "Delete dataset": "Видалити датасет",
+        "Create Train / Val / Test": "Створити Train / Val / Test",
+        "All images": "Усі зображення",
+        "With Ground Truth": "З еталонною маскою",
+        "Without Ground Truth": "Без еталонної маски",
+        "Search images": "Пошук зображень",
+        "Filter by split": "Фільтр за вибіркою",
+        "Prediction mask": "Маска прогнозування",
+        "Ground Truth": "Еталонна маска",
+        "Split": "Вибірка",
+        "Move to...": "Перемістити до...",
+        "Move to dataset": "Перемістити до датасету",
+        "Actions": "Дії",
+        "Add User": "Додати користувача",
+        "Cancel": "Скасувати",
+        "Create account": "Створити обліковий запис",
+        "Creating...": "Створення...",
+        "Detected classes": "Виявлені класи",
+        "Dominant class:": "Домінантний клас:",
+        "Show detected classes": "Показати виявлені класи",
+        "System dataset": "Системний датасет",
+        "No datasets found": "Датасетів не знайдено",
+        "No images match the selected filters.": "За вибраними фільтрами зображень не знайдено.",
+        "Unassigned": "Не призначено",
+        "Train": "Навчальна",
+        "Val": "Валідаційна",
+        "Test": "Тест",
+        "Yes": "Так",
+        "No": "Ні"
+    });
+
+    Object.assign(uk, {
+        "Current user": "Поточний користувач"
+    });
+
+    Object.assign(uk, {
+        "test": "тест",
+        "images": "зображень",
+        "Showing": "Показано"
+    });
+
     const en = Object.fromEntries(
         Object.entries(uk).map(([english, ukrainian]) => [ukrainian, english])
     );
@@ -274,5 +318,25 @@
 
     updatePage();
 
-    // MutationObserver temporarily disabled for flicker diagnosis.
+    let observerScheduled = false;
+    const observer = new MutationObserver(records => {
+        if (observerScheduled) return;
+
+        const hasNewNodes = records.some(record =>
+            record.addedNodes && record.addedNodes.length > 0
+        );
+
+        if (!hasNewNodes) return;
+
+        observerScheduled = true;
+        requestAnimationFrame(() => {
+            observerScheduled = false;
+            updatePage();
+        });
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
 })();

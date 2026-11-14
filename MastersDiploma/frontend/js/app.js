@@ -87,6 +87,48 @@
         document.getElementById("traversabilityButton");
 
     const confidenceButton = document.getElementById("confidenceButton");
+
+    const depthButton = document.getElementById("depthButton") || (() => {
+        const button = document.createElement("button");
+        button.id = "depthButton";
+        button.type = "button";
+        button.textContent = "Depth Map";
+        button.className = document.getElementById("overlayButton")?.className || "";
+        button.disabled = true;
+        const reference = document.getElementById("overlayButton");
+        (reference?.parentElement || document.body).appendChild(button);
+        return button;
+    })();
+    const uncertaintyButton = document.getElementById("uncertaintyButton") || (() => {
+        const button = document.createElement("button");
+        button.id = "uncertaintyButton";
+        button.type = "button";
+        button.textContent = "Uncertainty Map";
+        button.className = document.getElementById("overlayButton")?.className || "";
+        button.disabled = true;
+        const reference = document.getElementById("overlayButton");
+        (reference?.parentElement || document.body).appendChild(button);
+        return button;
+    })();
+    const downloadDepth = document.getElementById("downloadDepth") || (() => {
+        const link = document.createElement("a");
+        link.id = "downloadDepth";
+        link.textContent = "Download Depth Map";
+        link.style.display = "none";
+        const reference = document.getElementById("downloadOverlay");
+        (reference?.parentElement || document.body).appendChild(link);
+        return link;
+    })();
+    const downloadUncertainty = document.getElementById("downloadUncertainty") || (() => {
+        const link = document.createElement("a");
+        link.id = "downloadUncertainty";
+        link.textContent = "Download Uncertainty Map";
+        link.style.display = "none";
+        const reference = document.getElementById("downloadOverlay");
+        (reference?.parentElement || document.body).appendChild(link);
+        return link;
+    })();
+
     const riskButton = document.getElementById("riskButton");
     const downloadRiskMap = document.getElementById("downloadRiskMap");
     const riskLegend = document.getElementById("riskLegend");
@@ -173,6 +215,8 @@
     let traversabilityUrl = "";
     let confidenceUrl = "";
     let confidenceFilename = "";
+    let depthUrl = "";
+    let uncertaintyUrl = "";
     let riskMapUrl = "";
     let safeCorridorUrl = "";
     let classIdsFilename = "";
@@ -262,7 +306,17 @@
         traversabilityUrl = "";
         confidenceUrl = "";
         confidenceFilename = "";
+        depthUrl = "";
+        uncertaintyUrl = "";
         classIdsFilename = "";
+
+        depthButton.disabled = true;
+        uncertaintyButton.disabled = true;
+        downloadDepth.style.display = "none";
+        downloadUncertainty.style.display = "none";
+
+        depthButton.classList.remove("active");
+        uncertaintyButton.classList.remove("active");
 
         confidenceStatus.textContent =
             "Select an image to calculate its confidence map.";
@@ -388,6 +442,22 @@
                 ? `${API_URL}${data.confidence_url}`
                 : "";
 
+            const depthResultUrl = data.depth_url
+                ? `${API_URL}${data.depth_url}`
+                : (
+                    data.depth_file
+                        ? `${API_URL}/results/${data.depth_file.split("/").pop()}`
+                        : ""
+                );
+
+            const uncertaintyResultUrl = data.uncertainty_url
+                ? `${API_URL}${data.uncertainty_url}`
+                : (
+                    data.uncertainty_file
+                        ? `${API_URL}/results/${data.uncertainty_file.split("/").pop()}`
+                        : ""
+                );
+
             const riskResultUrl = data.risk_map_url
                 ? `${API_URL}${data.risk_map_url}`
                 : (
@@ -426,6 +496,8 @@
             addLink("Mask", downloadUrl(maskFullUrl));
             addLink("Traversability", downloadUrl(traversalUrl));
             addLink("Confidence", downloadUrl(confidenceResultUrl));
+            addLink("Depth Map", downloadUrl(depthResultUrl));
+            addLink("Uncertainty Map", downloadUrl(uncertaintyResultUrl));
             addLink("Risk Map", downloadUrl(riskResultUrl));
             addLink("Safe Corridor", downloadUrl(safeCorridorResultUrl));
 
@@ -794,6 +866,47 @@
         confidenceUrl = data.confidence_url
             ? `${API_URL}${data.confidence_url}`
             : "";
+
+        depthUrl = data.depth_url
+            ? `${API_URL}${data.depth_url}`
+            : (
+                data.depth_file
+                    ? `${API_URL}/results/${data.depth_file.split("/").pop()}`
+                    : ""
+            );
+
+        uncertaintyUrl = data.uncertainty_url
+            ? `${API_URL}${data.uncertainty_url}`
+            : (
+                data.uncertainty_file
+                    ? `${API_URL}/results/${data.uncertainty_file.split("/").pop()}`
+                    : ""
+            );
+
+        depthButton.disabled = !depthUrl;
+        uncertaintyButton.disabled = !uncertaintyUrl;
+
+        downloadDepth.style.display = depthUrl ? "inline-flex" : "none";
+        downloadUncertainty.style.display =
+            uncertaintyUrl ? "inline-flex" : "none";
+
+        if (depthUrl) {
+            downloadDepth.href =
+                `${depthUrl}${depthUrl.includes("?") ? "&" : "?"}download=true`;
+            downloadDepth.download =
+                data.depth_file
+                    ? data.depth_file.split("/").pop()
+                    : depthUrl.split("/").pop();
+        }
+
+        if (uncertaintyUrl) {
+            downloadUncertainty.href =
+                `${uncertaintyUrl}${uncertaintyUrl.includes("?") ? "&" : "?"}download=true`;
+            downloadUncertainty.download =
+                data.uncertainty_file
+                    ? data.uncertainty_file.split("/").pop()
+                    : uncertaintyUrl.split("/").pop();
+        }
 
         confidenceButton.disabled = !confidenceUrl;
         downloadConfidence.style.display =
@@ -1343,11 +1456,35 @@
                 safe_corridor: {
                     url: safeCorridorUrl,
                     title: "Safe Corridor"
-                }
+                },
+                depth: {
+                    url: depthUrl,
+                    title: "Relative Depth Map"
+                },
+                uncertainty: {
+                    url: uncertaintyUrl,
+                    title: "Uncertainty Map"
+                },
             };
         }
 
         function updateComparisonOptions() {
+            [comparisonSelect1, comparisonSelect2].forEach(select => {
+                if (!select) return;
+
+                [
+                    ["depth", "Depth Map"],
+                    ["uncertainty", "Uncertainty Map"]
+                ].forEach(([value, label]) => {
+                    if (!select.querySelector(`option[value="${value}"]`)) {
+                        const option = document.createElement("option");
+                        option.value = value;
+                        option.textContent = label;
+                        select.appendChild(option);
+                    }
+                });
+            });
+
             const modes = getComparisonModes();
 
             [comparisonSelect1, comparisonSelect2].forEach(select => {
@@ -1370,7 +1507,10 @@
                 return;
             }
 
-            window.Auth.loadProtectedImage(comparisonImage2, `${selectedMode.url}?t=${Date.now()}`);
+            window.SegmentationView.showImage(
+                comparisonImage2,
+                `${selectedMode.url}?t=${Date.now()}`
+            );
 
             comparisonTitle2.textContent = selectedMode.title;
         }
@@ -1400,7 +1540,15 @@
                 safe_corridor: {
                     url: safeCorridorUrl,
                     title: "Safe Corridor"
-                }
+                },
+                depth: {
+                    url: depthUrl,
+                    title: "Relative Depth Map"
+                },
+                uncertainty: {
+                    url: uncertaintyUrl,
+                    title: "Uncertainty Map"
+                },
             };
 
             const selectedMode = modes[mode];
@@ -1432,6 +1580,12 @@
                 mode === "safe_corridor"
             );
 
+            depthButton.classList.toggle("active", mode === "depth");
+            uncertaintyButton.classList.toggle(
+                "active",
+                mode === "uncertainty"
+            );
+
             riskLegend.style.display =
                 mode === "risk" && riskMapUrl ? "block" : "none";
 
@@ -1455,6 +1609,14 @@
                 mode === "confidence" && confidenceUrl ? "block" : "none";
         }
 
+        depthButton.addEventListener("click", function () {
+            setResultView("depth");
+        });
+
+        uncertaintyButton.addEventListener("click", function () {
+            setResultView("uncertainty");
+        });
+
         overlayButton.addEventListener("click", function () {
             setResultView("overlay");
         });
@@ -1477,6 +1639,14 @@
 
         safeCorridorButton.addEventListener("click", function () {
             setResultView("safe_corridor");
+        });
+
+        depthButton.addEventListener("click", function () {
+            setResultView("depth");
+        });
+
+        uncertaintyButton.addEventListener("click", function () {
+            setResultView("uncertainty");
         });
 
         comparisonSelect1.addEventListener("change", function () {
