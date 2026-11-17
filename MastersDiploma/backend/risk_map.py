@@ -47,12 +47,27 @@ CLASS_NAMES = {
     18: "bicycle",
 }
 
+# Classes treated as potential navigation obstacles.
+POSITION_RISK_CLASSES = {
+    5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 18
+}
+
+# Additional relative risk based on vertical image position.
+POSITION_RISK_TOP = 0
+POSITION_RISK_MIDDLE = 5
+POSITION_RISK_BOTTOM = 10
+
 
 def analyze_risk(class_mask, confidence_map=None):
     """
     Build a pixel-wise relative navigation risk map.
 
-    Risk is based on semantic class and model uncertainty.
+    Risk combines:
+    - semantic class risk;
+    - model uncertainty;
+    - vertical image position for potential obstacles.
+
+    Position is an image-space heuristic, not metric distance.
     Output values are in the range 0-100.
     """
     mask = np.asarray(class_mask)
@@ -64,6 +79,9 @@ def analyze_risk(class_mask, confidence_map=None):
         raise ValueError("class_mask must contain integer class IDs.")
 
     height, width = mask.shape
+
+    if height == 0 or width == 0:
+        raise ValueError("class_mask must not be empty.")
 
     if confidence_map is not None:
         confidence = np.asarray(confidence_map, dtype=np.float32)
@@ -83,6 +101,7 @@ def analyze_risk(class_mask, confidence_map=None):
     else:
         confidence = np.ones(mask.shape, dtype=np.float32)
 
+    # Base risk from semantic classes.
     base_risk = np.zeros(mask.shape, dtype=np.float32)
 
     for class_id, risk_value in CLASS_RISK.items():
@@ -95,8 +114,34 @@ def analyze_risk(class_mask, confidence_map=None):
     # Low model confidence adds up to 20 risk points.
     uncertainty_risk = (1.0 - confidence) * 20.0
 
+    # Position risk: lower image regions receive a larger addition.
+    row_positions = np.arange(height, dtype=np.float32)[:, np.newaxis]
+
+    position_by_row = np.where(
+        row_positions < height / 3.0,
+        POSITION_RISK_TOP,
+        np.where(
+            row_positions < 2.0 * height / 3.0,
+            POSITION_RISK_MIDDLE,
+            POSITION_RISK_BOTTOM,
+        ),
+    )
+
+    position_risk = np.zeros(mask.shape, dtype=np.float32)
+
+    potential_obstacles = np.isin(
+        mask,
+        list(POSITION_RISK_CLASSES)
+    )
+
+    position_risk[potential_obstacles] = np.broadcast_to(
+        position_by_row,
+        mask.shape
+    )[potential_obstacles]
+
+    # Combine all risk components and keep the result in [0, 100].
     risk_map = np.clip(
-        base_risk + uncertainty_risk,
+        base_risk + uncertainty_risk + position_risk,
         0.0,
         100.0
     )

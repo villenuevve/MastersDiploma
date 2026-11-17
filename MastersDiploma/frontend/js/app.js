@@ -1641,13 +1641,9 @@
             setResultView("safe_corridor");
         });
 
-        depthButton.addEventListener("click", function () {
-            setResultView("depth");
-        });
 
-        uncertaintyButton.addEventListener("click", function () {
-            setResultView("uncertainty");
-        });
+
+
 
         comparisonSelect1.addEventListener("change", function () {
             setResultView(this.value);

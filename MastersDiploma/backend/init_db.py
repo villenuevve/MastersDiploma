@@ -36,6 +36,27 @@ def init_db():
                 connection.exec_driver_sql(sql)
                 print(f"Added images.{column_name}")
 
+    # DATASET_SYSTEM_FLAG_MIGRATION
+    with engine.begin() as connection:
+        dataset_columns = {
+            row[1]
+            for row in connection.exec_driver_sql(
+                "PRAGMA table_info(datasets)"
+            ).fetchall()
+        }
+        if "is_system" not in dataset_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE datasets "
+                "ADD COLUMN is_system BOOLEAN NOT NULL DEFAULT 0"
+            )
+            print("Added datasets.is_system")
+
+        connection.exec_driver_sql(
+            "UPDATE datasets SET is_system = 1 "
+            "WHERE name = ? AND is_system = 0",
+            ("Uploaded images",)
+        )
+
 
 
     db: Session = SessionLocal()

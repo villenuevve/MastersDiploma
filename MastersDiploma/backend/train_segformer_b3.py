@@ -13,11 +13,11 @@ from transformers import (
     SegformerImageProcessor,
 )
 
+from backend.database import BASE_DIR, SessionLocal
+from backend.models import Dataset, Image as DBImage
+
 
 MODEL_NAME = "nvidia/segformer-b3-finetuned-cityscapes-1024-1024"
-
-IMAGE_DIR = Path("data/evaluation/cityscapes_full/leftImg8bit/train")
-MASK_DIR = Path("data/evaluation/cityscapes_trainIds/train")
 
 NUM_CLASSES = 19
 IGNORE_INDEX = 255
@@ -35,27 +35,240 @@ def synchronize(device):
         torch.mps.synchronize()
 
 
-def get_mask_path(image_path):
-    relative = image_path.relative_to(IMAGE_DIR)
-    mask_name = image_path.name.replace(
-        "_leftImg8bit.png",
-        "_gtFine_labelTrainIds.png"
+def resolve_path(relative_path):
+    path = Path(relative_path)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+def load_dataset(dataset_id):
+    db = SessionLocal()
+    try:
+        dataset = db.query(Dataset).filter(
+            Dataset.id == dataset_id
+        ).first()
+
+        if dataset is None:
+            raise ValueError(f"Dataset {dataset_id} not found.")
+
+        if dataset.is_system:
+            raise ValueError(
+                "The system dataset 'Uploaded images' cannot be used "
+                "for managed training splits. Create a separate dataset."
+            )
+
+        records = db.query(DBImage).filter(
+            DBImage.dataset_id == dataset_id,
+            DBImage.has_ground_truth.is_(True),
+            DBImage.ground_truth_path.isnot(None),
+            DBImage.split_id.isnot(None),
+        ).all()
+
+        result = {
+            "Train": [],
+            "Val": [],
+            "Test": [],
+        }
+
+        for record in records:
+            split_name = record.split.name if record.split else None
+
+            if split_name not in result:
+                continue
+
+            image_path = resolve_path(record.file_path)
+            mask_path = resolve_path(record.ground_truth_path)
+
+            if not image_path.is_file():
+                raise FileNotFoundError(
+                    f"Image {record.id} not found: {image_path}"
+                )
+
+            if not mask_path.is_file():
+                raise FileNotFoundError(
+                    f"Ground Truth for image {record.id} not found: "
+                    f"{mask_path}"
+                )
+
+            result[split_name].append({
+                "id": record.id,
+                "filename": record.filename,
+                "image": image_path,
+                "mask": mask_path,
+            })
+
+        return dataset.name, result
+
+    finally:
+        db.close()
+
+
+def load_pair(record, max_side):
+    with Image.open(record["image"]) as source:
+        image = source.convert("RGB")
+
+    with Image.open(record["mask"]) as source:
+        mask = source.convert("L")
+
+    if image.size != mask.size:
+        raise ValueError(
+            f"Image/GT dimension mismatch for image ID {record['id']}: "
+            f"{image.size} != {mask.size}"
+        )
+
+    width, height = image.size
+    scale = min(1.0, max_side / max(width, height))
+
+    new_size = (
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
     )
-    return MASK_DIR / relative.parent / mask_name
+
+    image = image.resize(
+        new_size,
+        Image.Resampling.BILINEAR
+    )
+    mask = mask.resize(
+        new_size,
+        Image.Resampling.NEAREST
+    )
+
+    target = np.asarray(mask, dtype=np.uint8)
+
+    invalid = (
+        (target != IGNORE_INDEX)
+        & (target >= NUM_CLASSES)
+    )
+
+    if np.any(invalid):
+        raise ValueError(
+            f"Invalid class IDs in {record['mask']}: "
+            f"{np.unique(target[invalid]).tolist()}"
+        )
+
+    if not np.any(target != IGNORE_INDEX):
+        raise ValueError(
+            f"Ground Truth contains only ignored pixels: {record['mask']}"
+        )
+
+    return image, target
+
+
+def calculate_metrics(confusion):
+    true_positive = np.diag(confusion).astype(np.float64)
+    ground_truth_count = confusion.sum(axis=1).astype(np.float64)
+    predicted_count = confusion.sum(axis=0).astype(np.float64)
+
+    union = ground_truth_count + predicted_count - true_positive
+    valid_classes = union > 0
+
+    iou = np.zeros(NUM_CLASSES, dtype=np.float64)
+    iou[valid_classes] = (
+        true_positive[valid_classes] / union[valid_classes]
+    )
+
+    total = confusion.sum()
+    pixel_accuracy = (
+        float(true_positive.sum() / total)
+        if total > 0 else 0.0
+    )
+
+    mean_iou = (
+        float(iou[valid_classes].mean())
+        if np.any(valid_classes) else 0.0
+    )
+
+    return {
+        "mIoU": mean_iou,
+        "pixel_accuracy": pixel_accuracy,
+        "valid_classes": int(valid_classes.sum()),
+        "class_iou": {
+            CLASS_NAMES[index]: float(iou[index])
+            for index in range(NUM_CLASSES)
+            if valid_classes[index]
+        },
+        "valid_pixels": int(total),
+    }
+
+
+def evaluate(model, processor, records, device, max_side):
+    model.eval()
+    confusion = np.zeros(
+        (NUM_CLASSES, NUM_CLASSES),
+        dtype=np.int64
+    )
+
+    with torch.no_grad():
+        for index, record in enumerate(records, start=1):
+            image, target = load_pair(record, max_side)
+
+            inputs = processor(
+                images=image,
+                return_tensors="pt"
+            )
+
+            pixel_values = inputs["pixel_values"].to(device)
+
+            outputs = model(pixel_values=pixel_values)
+
+            logits = F.interpolate(
+                outputs.logits,
+                size=target.shape,
+                mode="bilinear",
+                align_corners=False
+            )
+
+            prediction = (
+                logits.argmax(dim=1)
+                .squeeze(0)
+                .cpu()
+                .numpy()
+                .astype(np.uint8)
+            )
+
+            valid = target != IGNORE_INDEX
+
+            encoded = (
+                target[valid].astype(np.int64) * NUM_CLASSES
+                + prediction[valid].astype(np.int64)
+            )
+
+            confusion += np.bincount(
+                encoded,
+                minlength=NUM_CLASSES * NUM_CLASSES
+            ).reshape(NUM_CLASSES, NUM_CLASSES)
+
+            if index % 10 == 0 or index == len(records):
+                print(
+                    f"Validation: {index}/{len(records)}",
+                    flush=True
+                )
+
+    return calculate_metrics(confusion)
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Fine-tune SegFormer-B3 using a database dataset."
+    )
+
+    parser.add_argument(
+        "--dataset-id",
+        type=int,
+        required=True
+    )
     parser.add_argument("--max-images", type=int, default=300)
     parser.add_argument("--max-side", type=int, default=768)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("models/segformer_b3_cityscapes_finetuned_pilot")
+        default=Path("models/segformer_b3_user_finetuned")
     )
+
     args = parser.parse_args()
 
     if args.max_images < 1:
@@ -79,33 +292,39 @@ def main():
         "mps" if torch.backends.mps.is_available() else "cpu"
     )
 
-    images = sorted(IMAGE_DIR.rglob("*_leftImg8bit.png"))
+    dataset_name, splits = load_dataset(args.dataset_id)
 
-    if not images:
-        raise FileNotFoundError(f"No training images in {IMAGE_DIR}")
+    for split_name in ("Train", "Val", "Test"):
+        if not splits[split_name]:
+            raise ValueError(
+                f"Dataset '{dataset_name}' has no labeled images "
+                f"assigned to {split_name}."
+            )
 
-    if args.max_images > len(images):
+    if args.max_images > len(splits["Train"]):
         raise ValueError(
-            f"Requested {args.max_images} images, available: {len(images)}"
+            f"Requested {args.max_images} training images, "
+            f"available: {len(splits['Train'])}"
         )
 
-    # Random sampling across all cities, not only the first sorted files.
-    selected_images = random.sample(images, args.max_images)
+    train_records = random.sample(
+        splits["Train"],
+        args.max_images
+    )
+    val_records = splits["Val"]
 
-    for image_path in selected_images:
-        mask_path = get_mask_path(image_path)
-        if not mask_path.exists():
-            raise FileNotFoundError(f"Missing mask: {mask_path}")
-
-    print("=== SEGFORMER-B3 FINE-TUNING ===")
+    print("=== SEGFORMER-B3 USER DATASET FINE-TUNING ===")
+    print("Dataset:", dataset_name)
+    print("Dataset ID:", args.dataset_id)
     print("Initial checkpoint:", MODEL_NAME)
     print("Device:", device)
-    print("Training images:", len(selected_images))
+    print("Train images:", len(train_records))
+    print("Validation images:", len(val_records))
+    print("Test images reserved:", len(splits["Test"]))
     print("Maximum input side:", args.max_side)
     print("Epochs:", args.epochs)
     print("Batch size: 1")
     print("Learning rate:", args.lr)
-    print("Ignore index:", IGNORE_INDEX)
     print("Output:", args.output)
 
     processor = SegformerImageProcessor.from_pretrained(
@@ -122,12 +341,12 @@ def main():
 
     if model.config.num_labels != NUM_CLASSES:
         raise ValueError(
-            f"Expected {NUM_CLASSES} classes, got {model.config.num_labels}"
+            f"Expected {NUM_CLASSES} classes, "
+            f"got {model.config.num_labels}"
         )
 
     model.config.semantic_loss_ignore_index = IGNORE_INDEX
     model.to(device)
-    model.train()
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -136,63 +355,21 @@ def main():
     )
 
     epoch_losses = []
+    validation_history = []
+    best_miou = -1.0
     started = time.perf_counter()
 
     for epoch in range(args.epochs):
+        model.train()
         losses = []
         epoch_started = time.perf_counter()
 
+        random.shuffle(train_records)
+
         print(f"\n=== EPOCH {epoch + 1}/{args.epochs} ===")
 
-        for index, image_path in enumerate(selected_images, start=1):
-            mask_path = get_mask_path(image_path)
-
-            with Image.open(image_path) as source:
-                image = source.convert("RGB")
-
-            with Image.open(mask_path) as source:
-                mask = source.convert("L")
-
-            if image.size != mask.size:
-                raise ValueError(
-                    f"Dimension mismatch: {image_path.name}"
-                )
-
-            original_width, original_height = image.size
-
-            scale = min(
-                1.0,
-                args.max_side / max(original_width, original_height)
-            )
-
-            width = max(1, round(original_width * scale))
-            height = max(1, round(original_height * scale))
-
-            image = image.resize(
-                (width, height),
-                Image.Resampling.BILINEAR
-            )
-            mask = mask.resize(
-                (width, height),
-                Image.Resampling.NEAREST
-            )
-
-            target_array = np.array(mask, dtype=np.uint8)
-
-            invalid = (
-                (target_array != IGNORE_INDEX)
-                & (target_array >= NUM_CLASSES)
-            )
-            if np.any(invalid):
-                raise ValueError(
-                    f"Invalid TrainIds in {mask_path.name}: "
-                    f"{np.unique(target_array[invalid]).tolist()}"
-                )
-
-            if not np.any(target_array != IGNORE_INDEX):
-                raise ValueError(
-                    f"Mask contains only ignored pixels: {mask_path}"
-                )
+        for index, record in enumerate(train_records, start=1):
+            image, target = load_pair(record, args.max_side)
 
             inputs = processor(
                 images=image,
@@ -202,7 +379,7 @@ def main():
             pixel_values = inputs["pixel_values"].to(device)
 
             labels = torch.from_numpy(
-                target_array.astype(np.int64)
+                target.astype(np.int64)
             ).unsqueeze(0).to(device)
 
             optimizer.zero_grad(set_to_none=True)
@@ -224,7 +401,7 @@ def main():
 
             if not torch.isfinite(loss).item():
                 raise RuntimeError(
-                    f"Non-finite loss at image {image_path.name}"
+                    f"Non-finite loss for image ID {record['id']}"
                 )
 
             loss.backward()
@@ -235,41 +412,88 @@ def main():
             loss_value = float(loss.detach().cpu().item())
             losses.append(loss_value)
 
-            if index % 10 == 0 or index == len(selected_images):
+            if index % 10 == 0 or index == len(train_records):
                 print(
-                    f"[{index}/{len(selected_images)}] "
+                    f"Train [{index}/{len(train_records)}] "
                     f"Loss: {loss_value:.5f} | "
-                    f"Mean loss: {np.mean(losses):.5f}",
+                    f"Mean: {np.mean(losses):.5f}",
                     flush=True
                 )
 
         epoch_loss = float(np.mean(losses))
         epoch_losses.append(epoch_loss)
 
-        print(
-            f"Epoch {epoch + 1} completed | "
-            f"Mean loss: {epoch_loss:.5f} | "
-            f"Time: {(time.perf_counter() - epoch_started) / 60:.2f} min"
+        print("Running validation...")
+
+        val_metrics = evaluate(
+            model,
+            processor,
+            val_records,
+            device,
+            args.max_side
         )
+
+        validation_history.append({
+            "epoch": epoch + 1,
+            "train_loss": epoch_loss,
+            **val_metrics,
+        })
+
+        print(
+            f"Epoch {epoch + 1} | "
+            f"Train loss: {epoch_loss:.5f} | "
+            f"Val mIoU: {val_metrics['mIoU']:.5f} | "
+            f"Val pixel accuracy: "
+            f"{val_metrics['pixel_accuracy']:.5f} | "
+            f"Time: "
+            f"{(time.perf_counter() - epoch_started) / 60:.2f} min"
+        )
+
+        if val_metrics["mIoU"] > best_miou:
+            best_miou = val_metrics["mIoU"]
+
+            args.output.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            model.to("cpu")
+            model.save_pretrained(
+                args.output,
+                safe_serialization=True
+            )
+            processor.save_pretrained(args.output)
+            model.to(device)
+
+            print(
+                f"Best checkpoint updated. "
+                f"Val mIoU: {best_miou:.5f}"
+            )
 
     total_time = time.perf_counter() - started
 
-    print("\n=== SAVING CHECKPOINT ===")
-
-    args.output.mkdir(parents=True, exist_ok=False)
-
-    model.to("cpu")
-    model.save_pretrained(
-        args.output,
-        safe_serialization=True
-    )
-    processor.save_pretrained(args.output)
-
     metadata = {
         "base_model": MODEL_NAME,
-        "dataset": "Cityscapes",
-        "training_split": "train",
-        "training_images": len(selected_images),
+        "dataset": dataset_name,
+        "dataset_id": args.dataset_id,
+        "training_split": "Train",
+        "validation_split": "Val",
+        "test_split": "Test",
+        "training_images": [
+            {
+                "id": record["id"],
+                "filename": record["filename"],
+            }
+            for record in train_records
+        ],
+        "validation_images": [
+            {
+                "id": record["id"],
+                "filename": record["filename"],
+            }
+            for record in val_records
+        ],
+        "reserved_test_images": len(splits["Test"]),
         "epochs": args.epochs,
         "max_input_side": args.max_side,
         "batch_size": 1,
@@ -278,15 +502,14 @@ def main():
         "weight_decay": 0.01,
         "seed": args.seed,
         "num_classes": NUM_CLASSES,
-        "ignore_index": IGNORE_INDEX,
         "class_names": CLASS_NAMES,
+        "ignore_index": IGNORE_INDEX,
         "device": str(device),
         "epoch_mean_losses": epoch_losses,
+        "validation_history": validation_history,
+        "best_validation_miou": best_miou,
         "training_time_minutes": round(total_time / 60, 2),
-        "selected_images": [
-            str(path.relative_to(IMAGE_DIR))
-            for path in selected_images
-        ],
+        "checkpoint_selection": "Best validation mIoU",
     }
 
     with open(
@@ -296,10 +519,12 @@ def main():
     ) as file:
         json.dump(metadata, file, ensure_ascii=False, indent=2)
 
-    print("Checkpoint saved:", args.output)
+    print("\n=== TRAINING COMPLETED ===")
+    print("Best validation mIoU:", round(best_miou, 5))
+    print("Checkpoint:", args.output)
     print("Training time:", round(total_time / 60, 2), "min")
-    print("Epoch losses:", epoch_losses)
-    print("Training metadata: training_config.json")
+    print("Metadata: training_config.json")
+    print("Test split was not used during training or validation.")
 
 
 if __name__ == "__main__":

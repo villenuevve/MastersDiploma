@@ -2,6 +2,7 @@ import csv
 import html
 import json
 import time
+import getpass
 from collections import defaultdict
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -11,9 +12,11 @@ ROOT = Path(__file__).resolve().parent.parent
 IMAGE_DIR = ROOT / "data" / "new_images"
 OUT = ROOT / "results"
 API_URL = "http://127.0.0.1:8000/predict"
+LOGIN_URL = "http://127.0.0.1:8000/auth/login"
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 OUT.mkdir(parents=True, exist_ok=True)
+CHECKPOINT = OUT / "all_images_analysis_checkpoint.json"
 images = sorted(
     p for p in IMAGE_DIR.rglob("*")
     if p.is_file() and p.suffix.lower() in EXTENSIONS
@@ -22,7 +25,37 @@ images = sorted(
 if not images:
     raise SystemExit(f"Изображения не найдены: {IMAGE_DIR}")
 
-rows = []
+email = input("Email пользователя: ").strip()
+password = getpass.getpass("Пароль: ")
+
+login_body = json.dumps({
+    "email": email,
+    "password": password,
+}).encode("utf-8")
+
+login_request = Request(
+    LOGIN_URL,
+    data=login_body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+
+with urlopen(login_request, timeout=30) as response:
+    access_token = json.loads(response.read().decode("utf-8"))["access_token"]
+
+print("Авторизация: OK")
+
+if CHECKPOINT.exists():
+    rows = json.loads(CHECKPOINT.read_text(encoding="utf-8"))
+    print(f"Checkpoint найден: {len(rows)} записей")
+else:
+    rows = []
+
+def save_checkpoint():
+    temp = CHECKPOINT.with_suffix(".tmp")
+    temp.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(CHECKPOINT)
+
 class_pixels = defaultdict(int)
 class_images = defaultdict(int)
 class_percentages = defaultdict(list)
@@ -31,7 +64,14 @@ total_start = time.perf_counter()
 
 print(f"Изображений найдено: {len(images)}")
 
+completed = {r["image"] for r in rows if r.get("status") == "ok"}
+
 for i, path in enumerate(images, 1):
+    relative_image = str(path.relative_to(ROOT))
+    if relative_image in completed:
+        print(f"[{i}/{len(images)}] SKIP {path.name}: уже обработано")
+        continue
+
     start = time.perf_counter()
     try:
         boundary = "----SegmentationBoundary7MA4YWxk"
@@ -45,7 +85,10 @@ for i, path in enumerate(images, 1):
         request = Request(
             API_URL,
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": f"Bearer {access_token}",
+            },
             method="POST",
         )
         with urlopen(request, timeout=300) as response:
@@ -53,16 +96,13 @@ for i, path in enumerate(images, 1):
 
         elapsed = (time.perf_counter() - start) * 1000
         detected = result.get("detected_classes", [])
-        total_pixels = sum(int(c.get("pixel_count", 0)) for c in detected)
+        total_pixels = sum(int(c.get("pixels", 0)) for c in detected)
 
         image_classes = []
         for c in detected:
             name = str(c.get("name", "unknown"))
-            pixels = int(c.get("pixel_count", 0))
+            pixels = int(c.get("pixels", 0))
             percentage = float(c.get("percentage", 0))
-            class_pixels[name] += pixels
-            class_images[name] += 1
-            class_percentages[name].append(percentage)
             image_classes.append({
                 "name": name,
                 "pixels": pixels,
@@ -70,7 +110,7 @@ for i, path in enumerate(images, 1):
             })
 
         rows.append({
-            "image": str(path.relative_to(ROOT)),
+            "image": relative_image,
             "status": "ok",
             "width": result.get("width", ""),
             "height": result.get("height", ""),
@@ -79,6 +119,7 @@ for i, path in enumerate(images, 1):
             "processing_ms": round(elapsed, 2),
             "classes": image_classes,
         })
+        save_checkpoint()
         print(f"[{i}/{len(images)}] OK {path.name}: "
               f"{len(image_classes)} classes, {elapsed:.0f} ms")
 
@@ -94,9 +135,22 @@ for i, path in enumerate(images, 1):
             "processing_ms": "",
             "classes": [],
         })
+        save_checkpoint()
         print(f"[{i}/{len(images)}] ERROR {path.name}: {exc}")
 
 successful = [r for r in rows if r["status"] == "ok"]
+
+for r in successful:
+    for c in r.get("classes", []):
+        name = str(c.get("name", "unknown"))
+        class_pixels[name] += int(c.get("pixels", 0))
+        class_images[name] += 1
+        class_percentages[name].append(float(c.get("percentage", 0)))
+
+errors = [
+    {"image": r["image"], "error": "Не удалось обработать"}
+    for r in rows if r.get("status") == "error"
+]
 total_seconds = time.perf_counter() - total_start
 class_names = sorted(class_pixels, key=lambda n: class_pixels[n], reverse=True)
 

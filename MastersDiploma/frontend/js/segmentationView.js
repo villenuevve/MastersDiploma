@@ -8,13 +8,19 @@
     }
 
     function showImage(imageElement, url) {
-        if (imageElement && url) {
-            if (window.Auth && typeof window.Auth.loadProtectedImage === "function") {
-                window.Auth.loadProtectedImage(imageElement, url);
-            } else {
-                imageElement.src = url;
-            }
+        if (!imageElement || !url) return;
+
+        if (
+            !window.Auth ||
+            typeof window.Auth.loadProtectedImage !== "function"
+        ) {
+            console.error(
+                "Protected image loading is unavailable: Auth is not initialized."
+            );
+            return;
         }
+
+        window.Auth.loadProtectedImage(imageElement, url);
     }
 
     function setText(elementId, value) {

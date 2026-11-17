@@ -39,6 +39,7 @@ class Dataset(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(150), nullable=False)
     description = Column(String(500))
+    is_system = Column(Boolean, default=False, nullable=False)
     owner_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 

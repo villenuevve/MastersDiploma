@@ -275,7 +275,7 @@
     }
 
     function isSystemDataset(dataset) {
-        return Boolean(dataset && dataset.name === "Uploaded images");
+        return Boolean(dataset && dataset.is_system);
     }
 
     async function loadDatasetSplits(datasetId) {

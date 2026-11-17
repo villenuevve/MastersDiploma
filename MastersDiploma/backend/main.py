@@ -86,7 +86,59 @@ CLASS_NAMES = {
 }
 
 
-@app.get("/")
+def ensure_dataset_access(
+    dataset: Dataset,
+    current_user: User,
+    allow_system_read: bool = False,
+):
+    # Read an already-loaded role without triggering lazy loading.
+    role = current_user.__dict__.get("role")
+
+    if role is not None:
+        role_name = role.name
+    else:
+        role_id = current_user.__dict__.get("role_id")
+
+        if role_id is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Unable to determine user role."
+            )
+
+        role_model = User.__mapper__.relationships["role"].mapper.class_
+        role_db = SessionLocal()
+
+        try:
+            role_record = role_db.query(role_model).filter(
+                role_model.id == role_id
+            ).first()
+            role_name = role_record.name if role_record else None
+        finally:
+            role_db.close()
+
+    if role_name == "Administrator":
+        return
+
+    if role_name != "Technician":
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to access managed datasets."
+        )
+
+    if dataset.is_system:
+        if allow_system_read:
+            return
+
+        raise HTTPException(
+            status_code=403,
+            detail="The system dataset is read-only."
+        )
+
+    if dataset.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to access this dataset."
+        )
 def root():
     return {
         "status": "ok",
@@ -102,6 +154,11 @@ def _get_upload_id(stem: str) -> str:
 
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            raise HTTPException(
+                status_code=404,
+                detail="Invalid result metadata."
+            )
         upload_id = metadata.get("upload_id")
     except (OSError, json.JSONDecodeError):
         raise HTTPException(status_code=500, detail="Could not read result metadata.")
@@ -182,25 +239,35 @@ def check_result_access(filename: str, current_user: User, db):
 
         return check_upload_access(upload_id, current_user, db)
 
-    # Legacy results: resolve the image through its stored artifact paths.
+    # Legacy results: resolve all images linked to the artifact paths.
     mask_rel = f"results/{stem}_mask.png"
     overlay_rel = f"results/{stem}_overlay.png"
 
-    image = (
+    matching_images = (
         db.query(DBImage)
         .outerjoin(Prediction, Prediction.image_id == DBImage.id)
         .filter(
             (DBImage.mask_path == mask_rel)
             | (Prediction.result_path == overlay_rel)
         )
-        .first()
+        .distinct()
+        .all()
     )
 
-    if image is None:
+    if not matching_images:
         raise HTTPException(status_code=404, detail="Image record not found.")
 
     if current_user.role.name in ("Administrator", "Technician"):
-        return image
+        return matching_images[0]
+
+    # A legacy artifact shared by multiple image records has ambiguous ownership.
+    if len(matching_images) != 1:
+        raise HTTPException(
+            status_code=403,
+            detail="Access to this legacy result is ambiguous."
+        )
+
+    image = matching_images[0]
 
     if image.uploaded_by != current_user.id:
         raise HTTPException(
@@ -244,6 +311,9 @@ def _load_confidence_map(confidence_path: Path) -> np.ndarray:
 
     if not np.isfinite(mapped).all():
         raise ValueError("Confidence data contains invalid values.")
+
+    if float(mapped.min()) < 0.0 or float(mapped.max()) > 1.0:
+        raise ValueError("Confidence values must be within [0, 1].")
 
     return np.asarray(mapped, dtype=np.float32)
 
@@ -544,17 +614,20 @@ async def predict(
                         status_code=404,
                         detail="Target dataset not found."
                     )
+
+                ensure_dataset_access(dataset, current_user)
             else:
                 dataset = (
                     db.query(Dataset)
-                    .filter(Dataset.name == "Uploaded images")
+                    .filter(Dataset.is_system.is_(True))
                     .first()
                 )
 
                 if dataset is None:
                     dataset = Dataset(
                         name="Uploaded images",
-                        description="Images uploaded through the web application."
+                        description="Images uploaded through the web application.",
+                        is_system=True,
                     )
                     db.add(dataset)
                     db.flush()
@@ -785,7 +858,7 @@ def download_results_archive(
         with zipfile.ZipFile(
             archive_buffer,
             mode="w",
-            compression=zipfile.ZIP_DEFLATED
+            compression=zipfile.ZIP_STORED
         ) as archive:
 
             original_path = original_candidates[0]
@@ -1020,7 +1093,16 @@ def recalculate_traversability(
                    "Run segmentation again to generate it."
         )
 
+    risk_map_path = RESULTS_DIR / f"{stem}_risk_map.png"
+    safe_corridor_path = (
+        RESULTS_DIR / f"{stem}_safe_corridor.png"
+    )
+
+    temp_paths = {}
+    original_contents = {}
+
     try:
+        # Load and validate the original class-ID mask.
         with Image.open(class_ids_path) as image:
             width, height = image.size
 
@@ -1031,15 +1113,24 @@ def recalculate_traversability(
                 or height > MAX_IMAGE_SIDE
                 or width * height > MAX_IMAGE_PIXELS
             ):
-                raise ValueError("Class-ID mask exceeds the allowed dimensions.")
+                raise ValueError(
+                    "Class-ID mask exceeds the allowed dimensions."
+                )
 
-            mask = np.asarray(image.convert("L"), dtype=np.uint8)
+            mask = np.asarray(
+                image.convert("L"),
+                dtype=np.uint8
+            )
 
+        # Load and validate the original confidence map.
         confidence_map = _load_confidence_map(confidence_path)
 
         if confidence_map.shape != mask.shape:
-            raise ValueError("Confidence and mask dimensions do not match.")
+            raise ValueError(
+                "Confidence and mask dimensions do not match."
+            )
 
+        # Calculate traversability without saving intermediate results.
         traversability = create_traversability_map(
             mask,
             confidence_map,
@@ -1047,38 +1138,97 @@ def recalculate_traversability(
         )
 
         colored = colorize_traversability_map(traversability)
-        Image.fromarray(colored).save(output_path)
 
-        # Regenerate the safe corridor using the updated traversability map.
-        risk_map_path = RESULTS_DIR / f"{stem}_risk_map.png"
+        # Recalculate Risk Map to apply the current risk model.
+        risk_analysis = analyze_risk(mask, confidence_map)
+        risk_map = risk_analysis["risk_map"]
 
-        if risk_map_path.is_file():
-            with Image.open(risk_map_path) as risk_image:
-                risk_map = np.asarray(
-                    risk_image.convert("L"), dtype=np.uint8
-                )
-        else:
-            risk_analysis = analyze_risk(mask, confidence_map)
-            risk_map = risk_analysis["risk_map"]
-            Image.fromarray(risk_map, mode="L").save(risk_map_path)
+        if risk_map.shape != mask.shape:
+            raise ValueError(
+                "Generated Risk Map dimensions do not match the mask."
+            )
 
+        # Calculate Safe Corridor before writing any final files.
         safe_corridor_analysis = analyze_safe_corridor(
             traversability,
             risk_map
         )
 
-        safe_corridor_path = (
-            RESULTS_DIR / f"{stem}_safe_corridor.png"
-        )
-        Image.fromarray(
-            safe_corridor_analysis["visualization"]
-        ).save(safe_corridor_path)
+        # Prepare all output files in the same directory.
+        outputs = {
+            output_path: lambda p: Image.fromarray(colored).save(p),
+            risk_map_path: lambda p: Image.fromarray(
+                risk_map.astype(np.uint8),
+                mode="L"
+            ).save(p),
+            safe_corridor_path: lambda p: Image.fromarray(
+                safe_corridor_analysis["visualization"]
+            ).save(p),
+        }
+
+        # Preserve existing files so they can be restored if replacement fails.
+        for final_path in outputs:
+            original_contents[final_path] = (
+                final_path.read_bytes()
+                if final_path.is_file()
+                else None
+            )
+
+        # Write all new files to temporary paths first.
+        for final_path, save_function in outputs.items():
+            temp_path = final_path.with_name(
+                f".{final_path.stem}.{uuid.uuid4().hex}.tmp"
+                f"{final_path.suffix}"
+            )
+
+            temp_paths[final_path] = temp_path
+            save_function(temp_path)
+
+        # Replace final files only after all calculations and writes succeed.
+        replaced_paths = []
+
+        try:
+            for final_path, temp_path in temp_paths.items():
+                temp_path.replace(final_path)
+                replaced_paths.append(final_path)
+
+        except Exception:
+            # Restore the original state if any replacement fails.
+            for final_path in reversed(replaced_paths):
+                original = original_contents[final_path]
+
+                try:
+                    if original is None:
+                        if final_path.exists():
+                            final_path.unlink()
+                    else:
+                        rollback_path = final_path.with_name(
+                            f".{final_path.stem}."
+                            f"{uuid.uuid4().hex}.rollback"
+                        )
+
+                        rollback_path.write_bytes(original)
+                        rollback_path.replace(final_path)
+
+                except OSError:
+                    pass
+
+            raise
 
     except (OSError, ValueError) as error:
         raise HTTPException(
             status_code=500,
             detail=f"Could not recalculate traversability: {error}"
         )
+
+    finally:
+        # Remove temporary files regardless of success or failure.
+        for temp_path in temp_paths.values():
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
 
     total_pixels = int(traversability.size)
 
@@ -1392,6 +1542,12 @@ def create_dataset(
         if not name:
             raise HTTPException(status_code=422, detail="Dataset name cannot be empty.")
 
+        if name == "Uploaded images":
+            raise HTTPException(
+                status_code=422,
+                detail="This dataset name is reserved."
+            )
+
         description = request.description
         if description is not None:
             description = description.strip() or None
@@ -1400,6 +1556,7 @@ def create_dataset(
             name=name,
             description=description,
             owner_id=current_user.id,
+            is_system=False,
         )
         db.add(dataset)
         db.commit()
@@ -1409,6 +1566,7 @@ def create_dataset(
             "id": dataset.id,
             "name": dataset.name,
             "description": dataset.description,
+            "is_system": dataset.is_system,
             "owner_id": dataset.owner_id,
             "created_at": dataset.created_at,
             "image_count": 0,
@@ -1432,7 +1590,9 @@ def update_dataset(
         if dataset is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
 
-        if dataset.name == "Uploaded images":
+        ensure_dataset_access(dataset, current_user)
+
+        if dataset.is_system:
             raise HTTPException(
                 status_code=403,
                 detail="The system dataset cannot be modified.",
@@ -1441,11 +1601,22 @@ def update_dataset(
         updates = request.dict(exclude_unset=True)
 
         if "name" in updates:
-            name = updates["name"].strip()
+            raw_name = updates["name"]
+            if raw_name is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Dataset name cannot be null.",
+                )
+            name = raw_name.strip()
             if not name:
                 raise HTTPException(
                     status_code=422,
                     detail="Dataset name cannot be empty.",
+                )
+            if name == "Uploaded images":
+                raise HTTPException(
+                    status_code=422,
+                    detail="This dataset name is reserved.",
                 )
             dataset.name = name
 
@@ -1464,6 +1635,7 @@ def update_dataset(
             "id": dataset.id,
             "name": dataset.name,
             "description": dataset.description,
+            "is_system": dataset.is_system,
             "owner_id": dataset.owner_id,
             "created_at": dataset.created_at,
             "image_count": len(dataset.images),
@@ -1486,7 +1658,7 @@ def delete_dataset(
         if dataset is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
 
-        if dataset.name == "Uploaded images":
+        if dataset.is_system:
             raise HTTPException(
                 status_code=403,
                 detail="The system dataset cannot be deleted.",
@@ -1517,7 +1689,9 @@ def delete_dataset(
 @app.get("/datasets/{dataset_id}/splits")
 def get_dataset_splits(
     dataset_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+        require_roles("Technician", "Administrator")
+    ),
 ):
     db = SessionLocal()
     try:
@@ -1530,6 +1704,12 @@ def get_dataset_splits(
                 status_code=404,
                 detail="Dataset not found."
             )
+
+        ensure_dataset_access(
+            dataset,
+            current_user,
+            allow_system_read=True
+        )
 
         splits = db.query(DatasetSplit).filter(
             DatasetSplit.dataset_id == dataset_id
@@ -1563,7 +1743,9 @@ def create_dataset_splits(
         if dataset is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
 
-        if dataset.name == "Uploaded images":
+        ensure_dataset_access(dataset, current_user)
+
+        if dataset.is_system:
             raise HTTPException(
                 status_code=403,
                 detail="The system dataset cannot have managed splits."
@@ -1617,7 +1799,9 @@ def assign_image_split(
         if dataset is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
 
-        if dataset.name == "Uploaded images":
+        ensure_dataset_access(dataset, current_user)
+
+        if dataset.is_system:
             raise HTTPException(
                 status_code=403,
                 detail="The system dataset cannot have managed splits."
@@ -1688,7 +1872,9 @@ def delete_dataset_image(
                 detail="Dataset not found."
             )
 
-        if dataset.name == "Uploaded images":
+        ensure_dataset_access(dataset, current_user)
+
+        if dataset.is_system:
             raise HTTPException(
                 status_code=403,
                 detail="Images in the system dataset cannot be deleted."
@@ -1781,6 +1967,9 @@ def delete_dataset_image(
                 except (OSError, json.JSONDecodeError):
                     continue
 
+                if not isinstance(metadata, dict):
+                    continue
+
                 if metadata.get("upload_id") != upload_id:
                     continue
 
@@ -1804,6 +1993,10 @@ def delete_dataset_image(
                         "confidence_raw",
                         "risk_map",
                         "safe_corridor",
+                        "depth",
+                        "depth_raw",
+                        "uncertainty",
+                        "uncertainty_raw",
                     ):
                         add_safe_file(
                             artifacts.get(key),
@@ -1817,6 +2010,10 @@ def delete_dataset_image(
                     "class_ids_file",
                     "risk_map_file",
                     "safe_corridor_file",
+                    "depth_file",
+                    "depth_raw_file",
+                    "uncertainty_file",
+                    "uncertainty_raw_file",
                 ):
                     add_safe_file(
                         metadata.get(key),
@@ -1841,6 +2038,49 @@ def delete_dataset_image(
         raise
     finally:
         db.close()
+
+    # Keep files that are still referenced by other database records.
+    remaining_db = SessionLocal()
+    try:
+        referenced_paths = set()
+
+        def add_reference(raw_path):
+            if not isinstance(raw_path, str) or not raw_path:
+                return
+
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = BASE_DIR / candidate
+
+            try:
+                referenced_paths.add(candidate.resolve())
+            except (OSError, RuntimeError):
+                pass
+
+        remaining_images = remaining_db.query(
+            DBImage.file_path,
+            DBImage.mask_path,
+            DBImage.ground_truth_path,
+        ).all()
+
+        for image_paths in remaining_images:
+            for raw_path in image_paths:
+                add_reference(raw_path)
+
+        remaining_predictions = remaining_db.query(
+            Prediction.result_path
+        ).all()
+
+        for (raw_path,) in remaining_predictions:
+            add_reference(raw_path)
+
+        files_to_delete = {
+            file_path
+            for file_path in files_to_delete
+            if file_path not in referenced_paths
+        }
+    finally:
+        remaining_db.close()
 
     deleted_files = 0
     cleanup_failures = 0
@@ -1894,13 +2134,30 @@ def move_image_to_dataset(
                 detail="Target dataset not found."
             )
 
-        if target_dataset.name == "Uploaded images":
+        if target_dataset.is_system:
             raise HTTPException(
                 status_code=403,
                 detail="Images cannot be moved into the system dataset."
             )
 
         source_dataset_id = image.dataset_id
+
+        source_dataset = db.query(Dataset).filter(
+            Dataset.id == source_dataset_id
+        ).first()
+
+        if source_dataset is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Source dataset not found."
+            )
+
+        ensure_dataset_access(
+            source_dataset,
+            current_user,
+            allow_system_read=True
+        )
+        ensure_dataset_access(target_dataset, current_user)
 
         if source_dataset_id == target_dataset_id:
             raise HTTPException(
@@ -1930,17 +2187,30 @@ def move_image_to_dataset(
 
 @app.get("/datasets")
 def get_datasets(
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles("Technician", "Administrator"))
 ):
     db = SessionLocal()
     try:
-        datasets = db.query(Dataset).order_by(Dataset.id.desc()).all()
+        role_name = current_user.role.name if current_user.role else None
+
+        if role_name == "Administrator":
+            datasets = db.query(Dataset).order_by(
+                Dataset.id.desc()
+            ).all()
+        elif role_name == "Technician":
+            datasets = db.query(Dataset).filter(
+                (Dataset.owner_id == current_user.id)
+                | (Dataset.is_system.is_(True))
+            ).order_by(Dataset.id.desc()).all()
+        else:
+            return []
 
         return [
             {
                 "id": dataset.id,
                 "name": dataset.name,
                 "description": dataset.description,
+                "is_system": dataset.is_system,
                 "created_at": dataset.created_at.isoformat()
                 if dataset.created_at else None,
                 "image_count": len(dataset.images),
@@ -1968,6 +2238,24 @@ def get_dataset_images(
                 status_code=404,
                 detail="Dataset not found."
             )
+
+        ensure_dataset_access(
+            dataset,
+            current_user,
+            allow_system_read=True
+        )
+
+        if split_id is not None:
+            split = db.query(DatasetSplit).filter(
+                DatasetSplit.id == split_id,
+                DatasetSplit.dataset_id == dataset_id,
+            ).first()
+
+            if split is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Split not found in this dataset."
+                )
 
         image_query = db.query(DBImage).filter(
             DBImage.dataset_id == dataset_id
@@ -2031,7 +2319,9 @@ async def batch_predict(
                 detail="Dataset not found."
             )
 
-        if dataset.name == "Uploaded images":
+        ensure_dataset_access(dataset, current_user)
+
+        if dataset.is_system:
             raise HTTPException(
                 status_code=403,
                 detail="Batch uploads to the system dataset are not allowed."
@@ -2095,7 +2385,30 @@ ALLOWED_GT_VALUES = set(range(19)) | {255}
 MAX_GT_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
-def get_ground_truth_image(db, dataset_id: int, image_id: int):
+def get_ground_truth_image(
+    db,
+    dataset_id: int,
+    image_id: int,
+    current_user: User,
+):
+    dataset = db.query(Dataset).filter(
+        Dataset.id == dataset_id
+    ).first()
+
+    if dataset is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found."
+        )
+
+    ensure_dataset_access(dataset, current_user)
+
+    if dataset.is_system:
+        raise HTTPException(
+            status_code=403,
+            detail="Ground Truth cannot be managed in the system dataset."
+        )
+
     image = (
         db.query(DBImage)
         .filter(
@@ -2109,15 +2422,6 @@ def get_ground_truth_image(db, dataset_id: int, image_id: int):
         raise HTTPException(
             status_code=404,
             detail="Image not found in this dataset."
-        )
-
-    dataset = db.query(Dataset).filter(
-        Dataset.id == dataset_id
-    ).first()
-    if dataset is not None and dataset.name == "Uploaded images":
-        raise HTTPException(
-            status_code=403,
-            detail="Ground Truth cannot be managed in the system dataset."
         )
 
     return image
@@ -2167,13 +2471,15 @@ async def upload_ground_truth(
 
     try:
         with Image.open(BytesIO(content)) as opened:
+            width = opened.width
+            height = opened.height
             if opened.format != "PNG":
                 raise HTTPException(
                     status_code=400,
                     detail="Only PNG format is supported."
                 )
 
-            if opened.width * opened.height > MAX_IMAGE_PIXELS:
+            if width * height > MAX_IMAGE_PIXELS:
                 raise HTTPException(
                     status_code=400,
                     detail="Ground Truth image exceeds pixel limit."
@@ -2206,7 +2512,7 @@ async def upload_ground_truth(
             detail="Ground Truth must contain integer class IDs."
         )
 
-    if mask.shape != (opened.height, opened.width):
+    if mask.shape != (height, width):
         raise HTTPException(
             status_code=400,
             detail="Invalid Ground Truth dimensions."
@@ -2232,15 +2538,16 @@ async def upload_ground_truth(
 
     db = SessionLocal()
     new_path = None
+    temp_path = None
 
     try:
-        image = get_ground_truth_image(db, dataset_id, image_id)
+        image = get_ground_truth_image(db, dataset_id, image_id, current_user)
 
-        if image.width != opened.width or image.height != opened.height:
+        if image.width != width or image.height != height:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Ground Truth dimensions ({opened.width}x{opened.height}) "
+                    f"Ground Truth dimensions ({width}x{height}) "
                     f"do not match source image ({image.width}x{image.height})."
                 )
             )
@@ -2278,8 +2585,8 @@ async def upload_ground_truth(
             "image_id": image.id,
             "has_ground_truth": True,
             "format": "trainIds",
-            "width": opened.width,
-            "height": opened.height,
+            "width": width,
+            "height": height,
             "classes": sorted(
                 value for value in unique_values if value != 255
             ),
@@ -2288,6 +2595,9 @@ async def upload_ground_truth(
 
     except Exception:
         db.rollback()
+
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
         if new_path and new_path.exists():
             new_path.unlink(missing_ok=True)
@@ -2310,7 +2620,7 @@ def get_ground_truth(
     db = SessionLocal()
 
     try:
-        image = get_ground_truth_image(db, dataset_id, image_id)
+        image = get_ground_truth_image(db, dataset_id, image_id, current_user)
 
         if not image.has_ground_truth or not image.ground_truth_path:
             raise HTTPException(
@@ -2342,7 +2652,7 @@ def delete_ground_truth(
     db = SessionLocal()
 
     try:
-        image = get_ground_truth_image(db, dataset_id, image_id)
+        image = get_ground_truth_image(db, dataset_id, image_id, current_user)
 
         old_relative_path = image.ground_truth_path
 
