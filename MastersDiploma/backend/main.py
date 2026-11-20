@@ -1974,7 +1974,7 @@ def delete_dataset_image(
                     continue
 
                 # Metadata itself.
-                add_safe_file(metadata_path, results_root)
+                add_safe_file(str(metadata_path), results_root)
 
                 # Additional artifacts recorded by predict().
                 artifacts = metadata.get("artifacts", {})
