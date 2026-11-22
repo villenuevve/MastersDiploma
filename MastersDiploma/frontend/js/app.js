@@ -113,6 +113,7 @@
     const downloadDepth = document.getElementById("downloadDepth") || (() => {
         const link = document.createElement("a");
         link.id = "downloadDepth";
+        link.className = "download-button secondary";
         link.textContent = "Download Depth Map";
         link.style.display = "none";
         const reference = document.getElementById("downloadOverlay");
@@ -122,6 +123,7 @@
     const downloadUncertainty = document.getElementById("downloadUncertainty") || (() => {
         const link = document.createElement("a");
         link.id = "downloadUncertainty";
+        link.className = "download-button secondary";
         link.textContent = "Download Uncertainty Map";
         link.style.display = "none";
         const reference = document.getElementById("downloadOverlay");
@@ -219,7 +221,7 @@
     let uncertaintyUrl = "";
     let riskMapUrl = "";
     let safeCorridorUrl = "";
-    let classIdsFilename = "";
+        let classIdsFilename = "";
 
 
     /* =============
@@ -402,10 +404,10 @@
                 if (!url) return;
 
                 const link = document.createElement("a");
-                link.textContent = label;
+                link.className = "download-button secondary";
+                link.textContent = `↓ ${label}`;
                 link.href = url;
-                link.target = "_blank";
-                link.rel = "noopener";
+                link.download = "";
                 links.appendChild(link);
             }
 
@@ -474,22 +476,22 @@
                         : ""
                 );
 
-            if (riskResultUrl) {
-                const riskPreview = document.createElement("img");
-                riskPreview.className = "batch-risk-preview";
-                riskPreview.alt = "Risk Map preview";
-                riskPreview.style.width = "100%";
-                riskPreview.style.maxHeight = "180px";
-                riskPreview.style.objectFit = "contain";
-                riskPreview.style.marginTop = "10px";
-                riskPreview.style.borderRadius = "8px";
+            if (overlayFullUrl) {
+                const overlayPreview = document.createElement("img");
+                overlayPreview.className = "batch-overlay-preview";
+                overlayPreview.alt = "Segmentation overlay preview";
+                overlayPreview.style.width = "100%";
+                overlayPreview.style.maxHeight = "180px";
+                overlayPreview.style.objectFit = "contain";
+                overlayPreview.style.marginTop = "10px";
+                overlayPreview.style.borderRadius = "8px";
 
                 window.Auth.loadProtectedImage(
-                    riskPreview,
-                    `${riskResultUrl}?t=${Date.now()}`
+                    overlayPreview,
+                    overlayFullUrl
                 );
 
-                card.appendChild(riskPreview);
+                card.appendChild(overlayPreview);
             }
 
             addLink("Overlay", downloadUrl(overlayFullUrl));
@@ -777,7 +779,8 @@
         safeCorridorMetrics.style.display = "block";
     }
 
-    async function displayPredictionResult(data, sourceFile) {
+
+    async function displayPredictionResult(data, sourceFile, savedResult = false) {
         const requestId = ++displayRequestId;
         const imageForDisplay = sourceFile || selectedImage;
         const overlayFilename = data.overlay_file.split("/").pop();
@@ -927,9 +930,17 @@
 
             confidenceMetrics.style.display = "none";
 
-            if (confidenceFilename) {
+            if (confidenceFilename && !savedResult) {
                 await recalculateConfidence(true, requestId);
                 if (requestId !== displayRequestId) return;
+            } else if (savedResult) {
+                meanConfidence.textContent =
+                    `${data.mean_confidence ?? "—"}%`;
+                lowConfidence.textContent =
+                    `${data.low_confidence_percentage ?? "—"}%`;
+                confidenceMetrics.style.display = "block";
+                confidenceStatus.textContent =
+                    "Loaded saved confidence map.";
             } else {
                 meanConfidence.textContent =
                     `${data.mean_confidence}%`;
@@ -954,13 +965,18 @@
             traversabilityLegend.style.display = "none";
         }
 
-        if (classIdsFilename && traversabilityUrl) {
+        if (classIdsFilename && traversabilityUrl && !savedResult) {
             await recalculateTraversability(true, requestId);
             if (requestId !== displayRequestId) return;
+        } else if (savedResult && traversabilityUrl) {
+            traversabilityStatus.textContent =
+                "Loaded saved traversability map.";
         } else {
             traversabilityStatus.textContent =
                 "Recalculation unavailable: class-ID filename was not returned by the API.";
         }
+
+        if (requestId !== displayRequestId) return;
 
         window.SegmentationView.prepareForNewImage(
             originalImage,
@@ -973,7 +989,7 @@
 
         window.SegmentationView.showImage(
             resultImage,
-            `${overlayUrl}?t=${Date.now()}`
+            overlayUrl
         );
 
         resultTitle.textContent = "Segmentation overlay";
@@ -990,7 +1006,6 @@
         confidenceButton.classList.remove("active");
         riskButton.classList.remove("active");
         safeCorridorButton.classList.remove("active");
-
         riskLegend.style.display = "none";
         riskMetrics.style.display = "none";
         safeCorridorLegend.style.display = "none";
@@ -1022,6 +1037,43 @@
             block: "start"
         });
     }
+
+    window.openSavedPredictionResult = async function(data, sourceFile) {
+        await displayPredictionResult(data, sourceFile, true);
+
+        const inspectorData = { ...data };
+
+        // Saved metadata omits the Base64 mask; load it through the protected API.
+        if (!inspectorData.class_ids_base64 && inspectorData.class_ids_filename) {
+            try {
+                const maskResponse = await window.Auth.apiFetch(
+                    `${API_URL}/results/${encodeURIComponent(inspectorData.class_ids_filename)}`
+                );
+
+                if (!maskResponse.ok) {
+                    throw new Error(
+                        `Could not load class ID mask: HTTP ${maskResponse.status}`
+                    );
+                }
+
+                const maskBlob = await maskResponse.blob();
+                const maskDataUrl = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => reject(
+                        reader.error || new Error('Could not read class ID mask.')
+                    );
+                    reader.readAsDataURL(maskBlob);
+                });
+
+                inspectorData.class_ids_base64 = String(maskDataUrl).split(',', 2)[1];
+            } catch (error) {
+                console.error('Inspector: could not load saved class ID mask:', error);
+            }
+        }
+
+        dispatchSegmentationViewSelected(inspectorData);
+    };
 
     async function runBatchSegmentation(files) {
         let succeeded = 0;
@@ -1241,6 +1293,8 @@
                 confidenceUrl =
                     `${API_URL}${result.confidence_url}`;
 
+                window.Auth.invalidateProtectedImage(confidenceUrl);
+
                 downloadConfidence.href =
                     `${confidenceUrl}?download=true`;
 
@@ -1359,6 +1413,8 @@
                 traversabilityUrl =
                     `${API_URL}${result.traversability_url}`;
 
+                window.Auth.invalidateProtectedImage(traversabilityUrl);
+
                 downloadTraversability.href =
                     `${traversabilityUrl}${traversabilityUrl.includes("?") ? "&" : "?"}download=true`;
                 downloadTraversability.download =
@@ -1369,6 +1425,7 @@
 // Update Safe Corridor using the recalculated traversability map.
                 if (result.safe_corridor_url) {
                     safeCorridorUrl = `${API_URL}${result.safe_corridor_url}`;
+                    window.Auth.invalidateProtectedImage(safeCorridorUrl);
 
                     safeCorridorButton.disabled = false;
                     downloadSafeCorridor.style.display = "inline-flex";
@@ -1509,7 +1566,7 @@
 
             window.SegmentationView.showImage(
                 comparisonImage2,
-                `${selectedMode.url}?t=${Date.now()}`
+                selectedMode.url
             );
 
             comparisonTitle2.textContent = selectedMode.title;
@@ -1560,7 +1617,7 @@
             // Display selected image
             window.SegmentationView.showImage(
                 resultImage,
-                `${selectedMode.url}?t=${Date.now()}`
+                selectedMode.url
             );
 
             resultTitle.textContent = selectedMode.title;
@@ -1640,6 +1697,7 @@
         safeCorridorButton.addEventListener("click", function () {
             setResultView("safe_corridor");
         });
+
 
 
 

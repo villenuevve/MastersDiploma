@@ -47,7 +47,7 @@
         "Segmentation completed successfully": "Сегментацію успішно завершено",
         "Invalid image. Please upload a valid JPG or PNG.": "Некоректне зображення. Завантажте файл JPG або PNG.",
         "The uploaded file is empty.": "Завантажений файл порожній.",
-        "Image is too large. Maximum size is 20 MB.": "Зображення завелике. Максимальний розмір — 20 МБ."
+        "Image is too large. Maximum size is 50 MB.": "Зображення завелике. Максимальний розмір — 50 МБ."
     };
 
     function translateText(text) {

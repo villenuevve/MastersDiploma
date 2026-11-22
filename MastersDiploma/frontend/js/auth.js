@@ -25,6 +25,40 @@
     let currentUser = null;
     const imageObjectUrls = new WeakMap();
     const imageRequestIds = new WeakMap();
+    const protectedImageCache = new Map();
+    const MAX_PROTECTED_IMAGE_CACHE_SIZE = 12;
+    let protectedImageCacheGeneration = 0;
+
+    function normalizeProtectedImageUrl(url) {
+        const parsedUrl = new URL(url, window.location.href);
+        parsedUrl.searchParams.delete("t");
+        parsedUrl.hash = "";
+        return parsedUrl.origin + parsedUrl.pathname + parsedUrl.search;
+    }
+
+    function clearProtectedImageCache() {
+        protectedImageCacheGeneration++;
+
+        protectedImageCache.forEach(entry => {
+            URL.revokeObjectURL(entry.objectUrl);
+        });
+        protectedImageCache.clear();
+    }
+
+    function invalidateProtectedImage(url) {
+        if (!url) return;
+
+        const normalizedUrl = normalizeProtectedImageUrl(url);
+
+        for (const [key, entry] of protectedImageCache.entries()) {
+            if (entry.url === normalizedUrl) {
+                URL.revokeObjectURL(entry.objectUrl);
+                protectedImageCache.delete(key);
+            }
+        }
+    }
+
+    window.addEventListener("auth:state-changed", clearProtectedImageCache);
 
     function getToken() {
         return sessionStorage.getItem(TOKEN_KEY);
@@ -169,14 +203,32 @@
         return originalFetch(input, init);
     };
 
-    // Завантажуємо захищене зображення через запит із JWT.
+    // Завантажуємо захищене зображення через JWT із повторним використанням кешу.
     async function loadProtectedImage(imageElement, url) {
         if (!imageElement || !url) return;
 
         const requestId = (imageRequestIds.get(imageElement) || 0) + 1;
         imageRequestIds.set(imageElement, requestId);
 
+        const token = getToken();
+        const cacheGeneration = protectedImageCacheGeneration;
+
         try {
+            const normalizedUrl = normalizeProtectedImageUrl(url);
+            const cacheKey = `${token || ""}|${normalizedUrl}`;
+            const cachedEntry = protectedImageCache.get(cacheKey);
+
+            if (cachedEntry) {
+                if (imageRequestIds.get(imageElement) !== requestId) return;
+
+                protectedImageCache.delete(cacheKey);
+                protectedImageCache.set(cacheKey, cachedEntry);
+
+                imageObjectUrls.set(imageElement, cachedEntry.objectUrl);
+                imageElement.src = cachedEntry.objectUrl;
+                return;
+            }
+
             const response = await apiFetch(url, { method: "GET" });
 
             if (!response.ok) {
@@ -188,16 +240,27 @@
             const blob = await response.blob();
 
             if (imageRequestIds.get(imageElement) !== requestId) return;
+            if (getToken() !== token) return;
+            if (protectedImageCacheGeneration !== cacheGeneration) return;
 
             const objectUrl = URL.createObjectURL(blob);
-            const previousUrl = imageObjectUrls.get(imageElement);
 
-            if (previousUrl) {
-                URL.revokeObjectURL(previousUrl);
+            protectedImageCache.set(cacheKey, {
+                url: normalizedUrl,
+                objectUrl
+            });
+
+            while (protectedImageCache.size > MAX_PROTECTED_IMAGE_CACHE_SIZE) {
+                const oldestKey = protectedImageCache.keys().next().value;
+                const oldestEntry = protectedImageCache.get(oldestKey);
+
+                URL.revokeObjectURL(oldestEntry.objectUrl);
+                protectedImageCache.delete(oldestKey);
             }
 
             imageObjectUrls.set(imageElement, objectUrl);
             imageElement.src = objectUrl;
+
         } catch (error) {
             if (imageRequestIds.get(imageElement) !== requestId) return;
             console.error("Помилка завантаження захищеного зображення:", error);
@@ -329,26 +392,41 @@
 
         if (!token) {
             showUnauthenticatedState();
+            document.documentElement.classList.remove("auth-pending");
             return;
         }
 
         try {
             const response = await apiFetch(API_URL + "/auth/me");
-            const data = await response.json();
 
-            if (!response.ok) {
+            if (response.status === 401) {
                 showUnauthenticatedState();
+                setMessage(
+                    "Сесію завершено. Увійдіть знову.",
+                    "error"
+                );
                 return;
             }
 
+            if (!response.ok) {
+                setMessage(
+                    "Сервер тимчасово не може перевірити сесію. Оновіть сторінку пізніше.",
+                    "error"
+                );
+                return;
+            }
+
+            const data = await response.json();
             showAuthenticatedState(data);
+
         } catch (error) {
             console.error("Не вдалося перевірити сесію:", error);
-            showUnauthenticatedState();
             setMessage(
-                "Не вдалося перевірити сесію. Увійдіть знову.",
+                "Не вдалося зв'язатися із сервером. Сесію збережено — спробуйте оновити сторінку.",
                 "error"
             );
+        } finally {
+            document.documentElement.classList.remove("auth-pending");
         }
     }
 
@@ -356,6 +434,7 @@
         getToken,
         apiFetch,
         loadProtectedImage,
+        invalidateProtectedImage,
         downloadProtectedFile,
         getCurrentUser: () => currentUser
     };

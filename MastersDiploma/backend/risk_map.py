@@ -101,15 +101,16 @@ def analyze_risk(class_mask, confidence_map=None):
     else:
         confidence = np.ones(mask.shape, dtype=np.float32)
 
-    # Base risk from semantic classes.
-    base_risk = np.zeros(mask.shape, dtype=np.float32)
-
+    # Vectorized lookup for Cityscapes class IDs.
+    # Unknown, negative and out-of-range IDs retain risk 100.
+    risk_lut = np.full(19, 100.0, dtype=np.float32)
     for class_id, risk_value in CLASS_RISK.items():
-        base_risk[mask == class_id] = risk_value
+        risk_lut[class_id] = risk_value
 
-    # Unknown class IDs are treated conservatively.
-    known_classes = np.isin(mask, list(CLASS_RISK.keys()))
-    base_risk[~known_classes] = 100.0
+    valid_ids = (mask >= 0) & (mask < 19)
+    base_risk = np.full(mask.shape, 100.0, dtype=np.float32)
+    base_risk[valid_ids] = risk_lut[mask[valid_ids]]
+
 
     # Low model confidence adds up to 20 risk points.
     uncertainty_risk = (1.0 - confidence) * 20.0
@@ -127,17 +128,17 @@ def analyze_risk(class_mask, confidence_map=None):
         ),
     )
 
-    position_risk = np.zeros(mask.shape, dtype=np.float32)
+    position_lut = np.zeros(19, dtype=bool)
+    position_lut[list(POSITION_RISK_CLASSES)] = True
 
-    potential_obstacles = np.isin(
-        mask,
-        list(POSITION_RISK_CLASSES)
-    )
+    potential_obstacles = np.zeros(mask.shape, dtype=bool)
+    potential_obstacles[valid_ids] = position_lut[mask[valid_ids]]
 
-    position_risk[potential_obstacles] = np.broadcast_to(
+    position_risk = np.where(
+        potential_obstacles,
         position_by_row,
-        mask.shape
-    )[potential_obstacles]
+        0.0
+    ).astype(np.float32, copy=False)
 
     # Combine all risk components and keep the result in [0, 100].
     risk_map = np.clip(
@@ -154,25 +155,32 @@ def analyze_risk(class_mask, confidence_map=None):
     medium_mask = (risk_map >= 30) & (risk_map < 60)
     high_mask = risk_map >= 60
 
+    unique_classes, inverse, counts = np.unique(
+        mask,
+        return_inverse=True,
+        return_counts=True
+    )
+
+    risk_sums = np.bincount(
+        inverse.ravel(),
+        weights=risk_map.ravel()
+    )
+
     class_statistics = []
 
-    for class_id in np.unique(mask):
-        class_pixels = mask == class_id
-        pixel_count = int(np.count_nonzero(class_pixels))
+    for index, class_id in enumerate(unique_classes):
+        pixel_count = int(counts[index])
 
         class_statistics.append({
             "class_id": int(class_id),
-            "class_name": CLASS_NAMES.get(
-                int(class_id),
-                "unknown"
-            ),
+            "class_name": CLASS_NAMES.get(int(class_id), "unknown"),
             "pixel_count": pixel_count,
             "percentage": round(
                 pixel_count / total_pixels * 100.0,
                 2
             ),
             "mean_risk": round(
-                float(np.mean(risk_map[class_pixels])),
+                float(risk_sums[index] / pixel_count),
                 2
             ),
         })

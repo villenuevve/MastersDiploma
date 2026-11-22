@@ -2,6 +2,8 @@ import argparse
 import json
 import random
 import time
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +31,12 @@ CLASS_NAMES = [
     "truck", "bus", "train", "motorcycle", "bicycle",
 ]
 
+SPLITS = {
+    "train": "Train",
+    "val": "Val",
+    "test": "Test",
+}
+
 
 def synchronize(device):
     if device.type == "mps":
@@ -42,7 +50,7 @@ def resolve_path(relative_path):
     return path.resolve()
 
 
-def load_dataset(dataset_id):
+def load_database_dataset(dataset_id):
     db = SessionLocal()
     try:
         dataset = db.query(Dataset).filter(
@@ -55,7 +63,7 @@ def load_dataset(dataset_id):
         if dataset.is_system:
             raise ValueError(
                 "The system dataset 'Uploaded images' cannot be used "
-                "for managed training splits. Create a separate dataset."
+                "for managed training splits."
             )
 
         records = db.query(DBImage).filter(
@@ -104,16 +112,152 @@ def load_dataset(dataset_id):
         db.close()
 
 
-def load_pair(record, max_side):
-    with Image.open(record["image"]) as source:
-        image = source.convert("RGB")
+class InfraParisZipSource:
+    def __init__(self, images_path, masks_path):
+        self.images_path = Path(images_path).expanduser().resolve()
+        self.masks_path = Path(masks_path).expanduser().resolve()
 
-    with Image.open(record["mask"]) as source:
-        mask = source.convert("L")
+        if not self.images_path.is_file():
+            raise FileNotFoundError(
+                f"Images ZIP not found: {self.images_path}"
+            )
+
+        if not self.masks_path.is_file():
+            raise FileNotFoundError(
+                f"Ground Truth ZIP not found: {self.masks_path}"
+            )
+
+        self.images_zip = zipfile.ZipFile(self.images_path, "r")
+        self.masks_zip = zipfile.ZipFile(self.masks_path, "r")
+
+    def close(self):
+        self.images_zip.close()
+        self.masks_zip.close()
+
+    def load_records(self):
+        image_files = {}
+        mask_files = {}
+
+        valid_splits = {"train", "val", "test"}
+
+        for name in self.images_zip.namelist():
+            parts = name.split("/")
+            if len(parts) < 4 or not name.lower().endswith(".png"):
+                continue
+
+            split_index = next(
+                (i for i, part in enumerate(parts)
+                 if part.lower() in valid_splits),
+                None
+            )
+            if split_index is None:
+                continue
+
+            split = parts[split_index].lower()
+            relative_parts = parts[split_index + 1:]
+            stem = Path(relative_parts[-1]).stem
+            location = tuple(relative_parts[:-1])
+            key = (split, location, stem)
+
+            if key in image_files:
+                raise ValueError(
+                    f"Duplicate InfraParis image key: {key}"
+                )
+
+            image_files[key] = name
+
+        for name in self.masks_zip.namelist():
+            parts = name.split("/")
+            if len(parts) < 4 or not parts[-1].endswith("_labelIds.png"):
+                continue
+
+            split_index = next(
+                (i for i, part in enumerate(parts)
+                 if part.lower() in valid_splits),
+                None
+            )
+            if split_index is None:
+                continue
+
+            split = parts[split_index].lower()
+            relative_parts = parts[split_index + 1:]
+            stem = relative_parts[-1][:-len("_labelIds.png")]
+            location = tuple(relative_parts[:-1])
+            key = (split, location, stem)
+
+            if key in mask_files:
+                raise ValueError(
+                    f"Duplicate InfraParis mask key: {key}"
+                )
+
+            mask_files[key] = name
+
+        image_keys = set(image_files)
+        mask_keys = set(mask_files)
+
+        missing_masks = image_keys - mask_keys
+        missing_images = mask_keys - image_keys
+
+        if missing_masks or missing_images:
+            raise ValueError(
+                "InfraParis image/mask pairing failed. "
+                f"Images without masks: {len(missing_masks)}. "
+                f"Masks without images: {len(missing_images)}. "
+                f"Image examples: {list(sorted(missing_masks))[:3]}. "
+                f"Mask examples: {list(sorted(missing_images))[:3]}"
+            )
+
+        if not image_keys:
+            raise ValueError(
+                "No InfraParis image/mask pairs found in ZIP archives."
+            )
+
+        result = {
+            "Train": [],
+            "Val": [],
+            "Test": [],
+        }
+
+        for split, location, stem in sorted(image_keys):
+            result[SPLITS[split]].append({
+                "id": f"{split}:{'/'.join(location)}:{stem}",
+                "filename": f"{stem}.png",
+                "image": image_files[(split, location, stem)],
+                "mask": mask_files[(split, location, stem)],
+                "source": "infraparis",
+            })
+
+        print("InfraParis dataset loaded:")
+        for split_name, records in result.items():
+            print(f"  {split_name}: {len(records)} image/mask pairs")
+
+        return result
+
+
+def load_pair(record, max_side, zip_source=None):
+    if record.get("source") == "infraparis":
+        if zip_source is None:
+            raise ValueError("InfraParis ZIP source was not provided.")
+
+        image_bytes = zip_source.images_zip.read(record["image"])
+        mask_bytes = zip_source.masks_zip.read(record["mask"])
+
+        with Image.open(BytesIO(image_bytes)) as source:
+            image = source.convert("RGB")
+
+        with Image.open(BytesIO(mask_bytes)) as source:
+            mask = source.convert("L")
+
+    else:
+        with Image.open(record["image"]) as source:
+            image = source.convert("RGB")
+
+        with Image.open(record["mask"]) as source:
+            mask = source.convert("L")
 
     if image.size != mask.size:
         raise ValueError(
-            f"Image/GT dimension mismatch for image ID {record['id']}: "
+            f"Image/GT dimension mismatch for {record['id']}: "
             f"{image.size} != {mask.size}"
         )
 
@@ -134,7 +278,12 @@ def load_pair(record, max_side):
         Image.Resampling.NEAREST
     )
 
-    target = np.asarray(mask, dtype=np.uint8)
+    target = np.asarray(mask, dtype=np.uint8).copy()
+
+    # InfraParis ID 19 is Unlabeled and is excluded
+    # from the 19-class Cityscapes training targets.
+    if record.get("source") == "infraparis":
+        target[target == 19] = IGNORE_INDEX
 
     invalid = (
         (target != IGNORE_INDEX)
@@ -143,16 +292,64 @@ def load_pair(record, max_side):
 
     if np.any(invalid):
         raise ValueError(
-            f"Invalid class IDs in {record['mask']}: "
+            f"Invalid class IDs in {record['id']}: "
             f"{np.unique(target[invalid]).tolist()}"
         )
 
     if not np.any(target != IGNORE_INDEX):
         raise ValueError(
-            f"Ground Truth contains only ignored pixels: {record['mask']}"
+            f"Ground Truth contains only ignored pixels: {record['id']}"
         )
 
     return image, target
+
+
+
+def has_trainable_pixels(record, max_side, zip_source):
+    """
+    Check whether a mask contains at least one valid target pixel
+    after applying the same resizing and label mapping as load_pair().
+    Only the mask is read; the RGB image is not loaded.
+    """
+    if record.get("source") != "infraparis":
+        return True
+
+    if zip_source is None:
+        raise ValueError("InfraParis ZIP source was not provided.")
+
+    mask_bytes = zip_source.masks_zip.read(record["mask"])
+
+    with Image.open(BytesIO(mask_bytes)) as source:
+        mask = source.convert("L")
+
+    width, height = mask.size
+    scale = min(1.0, max_side / max(width, height))
+
+    new_size = (
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
+    )
+
+    mask = mask.resize(
+        new_size,
+        Image.Resampling.NEAREST
+    )
+
+    target = np.asarray(mask, dtype=np.uint8).copy()
+    target[target == 19] = IGNORE_INDEX
+
+    invalid = (
+        (target != IGNORE_INDEX)
+        & (target >= NUM_CLASSES)
+    )
+
+    if np.any(invalid):
+        raise ValueError(
+            f"Invalid class IDs in {record['id']}: "
+            f"{np.unique(target[invalid]).tolist()}"
+        )
+
+    return bool(np.any(target != IGNORE_INDEX))
 
 
 def calculate_metrics(confusion):
@@ -192,8 +389,9 @@ def calculate_metrics(confusion):
     }
 
 
-def evaluate(model, processor, records, device, max_side):
+def evaluate(model, processor, records, device, max_side, zip_source):
     model.eval()
+
     confusion = np.zeros(
         (NUM_CLASSES, NUM_CLASSES),
         dtype=np.int64
@@ -201,7 +399,11 @@ def evaluate(model, processor, records, device, max_side):
 
     with torch.no_grad():
         for index, record in enumerate(records, start=1):
-            image, target = load_pair(record, max_side)
+            image, target = load_pair(
+                record,
+                max_side,
+                zip_source
+            )
 
             inputs = processor(
                 images=image,
@@ -209,7 +411,6 @@ def evaluate(model, processor, records, device, max_side):
             )
 
             pixel_values = inputs["pixel_values"].to(device)
-
             outputs = model(pixel_values=pixel_values)
 
             logits = F.interpolate(
@@ -250,14 +451,28 @@ def evaluate(model, processor, records, device, max_side):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fine-tune SegFormer-B3 using a database dataset."
+        description="Fine-tune SegFormer-B3 on a database dataset "
+                    "or InfraParis ZIP archives."
     )
 
     parser.add_argument(
-        "--dataset-id",
-        type=int,
-        required=True
+        "--source",
+        choices=["database", "infraparis"],
+        default="database"
     )
+    parser.add_argument("--dataset-id", type=int, default=None)
+
+    parser.add_argument(
+        "--images-zip",
+        type=Path,
+        default=Path("~/Downloads/Left.zip")
+    )
+    parser.add_argument(
+        "--masks-zip",
+        type=Path,
+        default=Path("~/Downloads/semantic_segmentation_truth.zip")
+    )
+
     parser.add_argument("--max-images", type=int, default=300)
     parser.add_argument("--max-side", type=int, default=768)
     parser.add_argument("--epochs", type=int, default=5)
@@ -271,14 +486,20 @@ def main():
 
     args = parser.parse_args()
 
+    if args.source == "database" and args.dataset_id is None:
+        parser.error("--dataset-id is required when --source=database")
+
     if args.max_images < 1:
-        raise ValueError("--max-images must be positive")
+        parser.error("--max-images must be positive")
     if args.max_side < 256:
-        raise ValueError("--max-side must be at least 256")
+        parser.error("--max-side must be at least 256")
     if args.epochs < 1:
-        raise ValueError("--epochs must be positive")
+        parser.error("--epochs must be positive")
     if args.lr <= 0:
-        raise ValueError("--lr must be positive")
+        parser.error("--lr must be positive")
+
+    args.output = args.output.expanduser()
+
     if args.output.exists():
         raise FileExistsError(
             f"Output already exists; refusing to overwrite: {args.output}"
@@ -292,7 +513,18 @@ def main():
         "mps" if torch.backends.mps.is_available() else "cpu"
     )
 
-    dataset_name, splits = load_dataset(args.dataset_id)
+    zip_source = None
+
+    if args.source == "database":
+        dataset_name, splits = load_database_dataset(args.dataset_id)
+
+    else:
+        zip_source = InfraParisZipSource(
+            args.images_zip,
+            args.masks_zip
+        )
+        dataset_name = "InfraParis"
+        splits = zip_source.load_records()
 
     for split_name in ("Train", "Val", "Test"):
         if not splits[split_name]:
@@ -301,24 +533,59 @@ def main():
                 f"assigned to {split_name}."
             )
 
-    if args.max_images > len(splits["Train"]):
+    train_candidates = splits["Train"]
+    excluded_unlabeled_training_records = []
+
+    if args.source == "infraparis":
+        usable_train_records = []
+
+        print("Checking InfraParis training masks...", flush=True)
+
+        for index, record in enumerate(train_candidates, start=1):
+            if has_trainable_pixels(
+                record,
+                args.max_side,
+                zip_source
+            ):
+                usable_train_records.append(record)
+            else:
+                excluded_unlabeled_training_records.append(record)
+
+            if index % 500 == 0 or index == len(train_candidates):
+                print(
+                    f"Mask filtering: {index}/{len(train_candidates)} | "
+                    f"Usable: {len(usable_train_records)} | "
+                    f"Excluded: "
+                    f"{len(excluded_unlabeled_training_records)}",
+                    flush=True
+                )
+
+        train_candidates = usable_train_records
+
+    if args.max_images > len(train_candidates):
         raise ValueError(
             f"Requested {args.max_images} training images, "
-            f"available: {len(splits['Train'])}"
+            f"available after filtering: {len(train_candidates)}"
         )
 
     train_records = random.sample(
-        splits["Train"],
+        train_candidates,
         args.max_images
     )
     val_records = splits["Val"]
 
-    print("=== SEGFORMER-B3 USER DATASET FINE-TUNING ===")
+    print("=== SEGFORMER-B3 FINE-TUNING ===")
+    print("Source:", args.source)
     print("Dataset:", dataset_name)
     print("Dataset ID:", args.dataset_id)
     print("Initial checkpoint:", MODEL_NAME)
     print("Device:", device)
-    print("Train images:", len(train_records))
+    print("Train images selected:", len(train_records))
+    print("Usable Train candidates:", len(train_candidates))
+    print(
+        "Excluded fully unlabeled Train images:",
+        len(excluded_unlabeled_training_records)
+    )
     print("Validation images:", len(val_records))
     print("Test images reserved:", len(splits["Test"]))
     print("Maximum input side:", args.max_side)
@@ -348,6 +615,22 @@ def main():
     model.config.semantic_loss_ignore_index = IGNORE_INDEX
     model.to(device)
 
+    print("\n=== BASELINE EVALUATION (BEFORE FINE-TUNING) ===")
+    baseline_metrics = evaluate(
+        model,
+        processor,
+        val_records,
+        device,
+        args.max_side,
+        zip_source
+    )
+
+    print(
+        f"Baseline Val mIoU: {baseline_metrics['mIoU']:.5f} | "
+        f"Baseline Val pixel accuracy: "
+        f"{baseline_metrics['pixel_accuracy']:.5f}"
+    )
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
@@ -369,7 +652,11 @@ def main():
         print(f"\n=== EPOCH {epoch + 1}/{args.epochs} ===")
 
         for index, record in enumerate(train_records, start=1):
-            image, target = load_pair(record, args.max_side)
+            image, target = load_pair(
+                record,
+                args.max_side,
+                zip_source
+            )
 
             inputs = processor(
                 images=image,
@@ -430,7 +717,8 @@ def main():
             processor,
             val_records,
             device,
-            args.max_side
+            args.max_side,
+            zip_source
         )
 
         validation_history.append({
@@ -475,10 +763,41 @@ def main():
     metadata = {
         "base_model": MODEL_NAME,
         "dataset": dataset_name,
+        "source": args.source,
         "dataset_id": args.dataset_id,
+        "source_archives": (
+            {
+                "images": str(zip_source.images_path),
+                "masks": str(zip_source.masks_path),
+            }
+            if zip_source else None
+        ),
+        "source_class_mapping": (
+            {
+                "0-18": "Mapped directly to the 19 Cityscapes classes",
+                "19": IGNORE_INDEX,
+            }
+            if args.source == "infraparis" else None
+        ),
         "training_split": "Train",
         "validation_split": "Val",
         "test_split": "Test",
+        "split_sizes": {
+            name: len(records)
+            for name, records in splits.items()
+        },
+        "training_candidates_original": len(splits["Train"]),
+        "training_candidates_usable": len(train_candidates),
+        "excluded_unlabeled_training_count": (
+            len(excluded_unlabeled_training_records)
+        ),
+        "excluded_unlabeled_training_images": [
+            {
+                "id": record["id"],
+                "filename": record["filename"],
+            }
+            for record in excluded_unlabeled_training_records
+        ],
         "training_images": [
             {
                 "id": record["id"],
@@ -505,11 +824,13 @@ def main():
         "class_names": CLASS_NAMES,
         "ignore_index": IGNORE_INDEX,
         "device": str(device),
+        "baseline_validation": baseline_metrics,
         "epoch_mean_losses": epoch_losses,
         "validation_history": validation_history,
         "best_validation_miou": best_miou,
         "training_time_minutes": round(total_time / 60, 2),
         "checkpoint_selection": "Best validation mIoU",
+        "test_evaluated": False,
     }
 
     with open(
@@ -518,6 +839,9 @@ def main():
         encoding="utf-8"
     ) as file:
         json.dump(metadata, file, ensure_ascii=False, indent=2)
+
+    if zip_source is not None:
+        zip_source.close()
 
     print("\n=== TRAINING COMPLETED ===")
     print("Best validation mIoU:", round(best_miou, 5))

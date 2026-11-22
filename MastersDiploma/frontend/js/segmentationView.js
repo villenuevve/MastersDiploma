@@ -294,7 +294,7 @@
         imageUrl,
         title
     ) {
-        showImage(imageElement, `${imageUrl}?t=${Date.now()}`);
+        showImage(imageElement, imageUrl);
 
         if (titleElement) {
             titleElement.textContent = title;

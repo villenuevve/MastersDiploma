@@ -33,13 +33,7 @@ def save_class_ids(mask: np.ndarray, path: str):
 
 def save_mask(mask: np.ndarray, path: str):
     """Save a colorized semantic segmentation mask."""
-    colored = np.zeros(
-        (mask.shape[0], mask.shape[1], 3),
-        dtype=np.uint8
-    )
-
-    for idx, color in enumerate(CITYSCAPES_COLORS):
-        colored[mask == idx] = color
+    colored = CITYSCAPES_COLORS[mask]
 
     Image.fromarray(colored).save(path)
 

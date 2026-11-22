@@ -45,3 +45,19 @@ results/
 
 # Local archive and experimental artifacts
 MastersDiploma/archive/
+
+# Local backups
+*.bak
+*.backup
+*.backup-*
+*.before_*
+*.rejected_*
+
+# Trained model weights and local model checkpoints
+*.safetensors
+MastersDiploma/models/
+
+# Local audit archive
+MastersDiploma_audit.zip
+*.bak_*
+*.backup_*

@@ -105,7 +105,6 @@ def predict_depth(image, return_stats=False):
         .float()
         .cpu()
         .numpy()
-        .astype(np.float32)
     )
 
     if not np.isfinite(depth_map).all():

@@ -1,0 +1,24 @@
+﻿Parameter,Value
+Dataset,InfraParis
+Base model,nvidia/segformer-b3-finetuned-cityscapes-1024-1024
+Training split,Train
+Validation split,Val
+Test split,Test
+Original Train candidates,6567
+Usable Train candidates,6566
+Excluded fully unlabeled images,1
+Images used for training,1000
+Validation images,189
+Test images evaluated,571
+Epochs,3
+Maximum input side,512
+Batch size,1
+Optimizer,AdamW
+Learning rate,1e-05
+Weight decay,0.01
+Random seed,42
+Number of classes,19
+Ignore index,255
+Device,mps
+Training time (minutes),18.99
+Checkpoint selection,Best validation mIoU

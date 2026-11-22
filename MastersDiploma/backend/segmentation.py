@@ -40,8 +40,14 @@ def load_model():
     loaded_processor.do_resize = False
     loaded_processor.do_pad = False
 
+    load_dtype = (
+        torch.float16 if DEVICE.type == "mps"
+        else torch.float32
+    )
+
     loaded_model = SegformerForSemanticSegmentation.from_pretrained(
-        MODEL_NAME
+        MODEL_NAME,
+        torch_dtype=load_dtype
     )
     loaded_model.to(DEVICE)
     loaded_model.eval()
@@ -82,10 +88,23 @@ CITYSCAPES_COLORS = np.array([
 ], dtype=np.uint8)
 
 
-def predict_mask(image: Image.Image, return_stats=False, return_confidence=False, return_uncertainty=False):
+def predict_mask(image: Image.Image, return_stats=False, return_confidence=False, return_uncertainty=False, profile=False):
     load_model()
 
     image = image.convert("RGB")
+    source_width, source_height = image.size
+
+    if max(image.size) > MAX_INPUT_SIDE:
+        scale = MAX_INPUT_SIDE / max(image.size)
+        resized_size = (
+            round(source_width * scale),
+            round(source_height * scale),
+        )
+        image = image.resize(
+            resized_size,
+            Image.Resampling.LANCZOS,
+        )
+
     original_width, original_height = image.size
 
     tile_size = 1024
@@ -137,57 +156,198 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
 
     start_time = time.perf_counter()
 
-    for y0 in y_positions:
-        for x0 in x_positions:
+    profile_times = {
+        "preprocess_ms": 0.0,
+        "device_transfer_ms": 0.0,
+        "forward_ms": 0.0,
+        "interpolation_ms": 0.0,
+        "softmax_confidence_ms": 0.0,
+        "uncertainty_ms": 0.0,
+        "cpu_transfer_ms": 0.0,
+        "merge_ms": 0.0,
+    }
+
+    def synchronize():
+        if DEVICE.type == "mps":
+            torch.mps.synchronize()
+        elif DEVICE.type == "cuda":
+            torch.cuda.synchronize()
+
+    batch_size = 2
+
+    tile_coordinates = [
+        (x0, y0)
+        for y0 in y_positions
+        for x0 in x_positions
+    ]
+
+    for batch_start in range(0, len(tile_coordinates), batch_size):
+        batch_coords = tile_coordinates[
+            batch_start:batch_start + batch_size
+        ]
+
+        stage_start = time.perf_counter() if profile else 0.0
+
+        tiles = []
+        tile_records = []
+
+        for x0, y0 in batch_coords:
             x1 = min(x0 + tile_size, original_width)
             y1 = min(y0 + tile_size, original_height)
 
             tile = image.crop((x0, y0, x1, y1))
-            tile_width, tile_height = tile.size
+            tiles.append(tile)
 
-            inputs = processor(images=tile, return_tensors="pt")
-            inputs = {
-                key: value.to(DEVICE)
-                for key, value in inputs.items()
-            }
+            tile_records.append((
+                x0, y0, x1, y1,
+                tile.size[0], tile.size[1]
+            ))
 
-            with torch.inference_mode():
-                outputs = model(**inputs)
+        inputs = processor(images=tiles, return_tensors="pt")
 
-                logits = F.interpolate(
-                    outputs.logits,
-                    size=(tile_height, tile_width),
+        if profile:
+            profile_times["preprocess_ms"] += (
+                time.perf_counter() - stage_start
+            ) * 1000
+            stage_start = time.perf_counter()
+
+        inputs = {
+            key: (
+                value.to(DEVICE, dtype=model.dtype)
+                if key == "pixel_values"
+                else value.to(DEVICE)
+            )
+            for key, value in inputs.items()
+        }
+
+        if profile:
+            synchronize()
+            profile_times["device_transfer_ms"] += (
+                time.perf_counter() - stage_start
+            ) * 1000
+
+        with torch.inference_mode():
+            if profile:
+                stage_start = time.perf_counter()
+
+            outputs = model(**inputs)
+
+
+            if profile:
+                synchronize()
+                profile_times["forward_ms"] += (
+                    time.perf_counter() - stage_start
+                ) * 1000
+                stage_start = time.perf_counter()
+
+            logits = F.interpolate(
+                outputs.logits.float(),
+                size=(tiles[0].size[1], tiles[0].size[0]),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+            if profile:
+                synchronize()
+                profile_times["interpolation_ms"] += (
+                    time.perf_counter() - stage_start
+                ) * 1000
+                stage_start = time.perf_counter()
+
+            tile_mask_batch = logits.argmax(dim=1)
+
+            if profile:
+                stage_start = time.perf_counter()
+
+            native_logits = outputs.logits.float()
+            log_probabilities = F.log_softmax(native_logits, dim=1)
+            probabilities = log_probabilities.exp()
+
+            native_confidence = probabilities.max(dim=1).values
+
+            tile_confidence_batch = F.interpolate(
+                native_confidence.unsqueeze(1),
+                size=(tiles[0].size[1], tiles[0].size[0]),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(1)
+
+            if profile:
+                synchronize()
+                profile_times["softmax_confidence_ms"] += (
+                    time.perf_counter() - stage_start
+                ) * 1000
+
+            if return_uncertainty:
+                if profile:
+                    stage_start = time.perf_counter()
+
+                entropy = -(
+                    probabilities * log_probabilities
+                ).sum(dim=1)
+
+                num_classes = probabilities.shape[1]
+                native_uncertainty = (
+                    entropy / np.log(num_classes)
+                ).clamp(0.0, 1.0)
+
+                tile_uncertainty_batch = F.interpolate(
+                    native_uncertainty.unsqueeze(1),
+                    size=(tiles[0].size[1], tiles[0].size[0]),
                     mode="bilinear",
                     align_corners=False,
+                ).squeeze(1)
+
+                if profile:
+                    synchronize()
+                    profile_times["uncertainty_ms"] += (
+                        time.perf_counter() - stage_start
+                    ) * 1000
+
+            if profile:
+                stage_start = time.perf_counter()
+
+            tile_outputs = [
+                tile_mask_batch.to(torch.float32),
+                tile_confidence_batch,
+            ]
+
+            if return_uncertainty:
+                tile_outputs.append(tile_uncertainty_batch)
+
+            tile_outputs_cpu = torch.stack(
+                tile_outputs, dim=1
+            ).cpu().numpy()
+
+            if profile:
+                synchronize()
+                profile_times["cpu_transfer_ms"] += (
+                    time.perf_counter() - stage_start
+                ) * 1000
+
+        for index, record in enumerate(tile_records):
+            x0, y0, x1, y1, tile_width, tile_height = record
+
+            tile_mask = tile_outputs_cpu[index, 0].astype(np.uint8)
+            tile_confidence = tile_outputs_cpu[index, 1].astype(
+                np.float32, copy=False
+            )
+
+            if return_uncertainty:
+                tile_uncertainty = tile_outputs_cpu[index, 2].astype(
+                    np.float32, copy=False
                 )
 
-                probabilities = torch.softmax(logits, dim=1)
-                tile_confidence = probabilities.max(dim=1).values[0]
-
-                if return_uncertainty:
-                    entropy = -(
-                        probabilities
-                        * torch.log(probabilities.clamp_min(1e-8))
-                    ).sum(dim=1)[0]
-
-                    num_classes = probabilities.shape[1]
-                    tile_uncertainty = (
-                        entropy / np.log(num_classes)
-                    ).clamp(0.0, 1.0)
-                    tile_uncertainty = (
-                        tile_uncertainty.cpu().numpy().astype(np.float32)
-                    )
-
-                tile_mask = logits.argmax(dim=1)[0]
-
-                tile_mask = tile_mask.cpu().numpy().astype(np.uint8)
-                tile_confidence = (
-                    tile_confidence.cpu().numpy().astype(np.float32)
-                )
+            if profile:
+                stage_start = time.perf_counter()
 
             # Reduce the influence of predictions near artificial tile edges.
             # Real image boundaries are not penalized.
-            ramp = min(overlap // 2, tile_width // 4, tile_height // 4)
+            ramp = min(
+                overlap // 2,
+                tile_width // 4,
+                tile_height // 4
+            )
 
             weight_x = np.ones(tile_width, dtype=np.float32)
             weight_y = np.ones(tile_height, dtype=np.float32)
@@ -227,10 +387,36 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
 
             region_score[update] = tile_score[update]
 
-            del inputs, outputs, logits, probabilities
-            del tile_mask, tile_confidence, tile
-            if return_uncertainty:
-                del entropy, tile_uncertainty
+            if profile:
+                profile_times["merge_ms"] += (
+                    time.perf_counter() - stage_start
+                ) * 1000
+
+        del inputs, outputs, logits, probabilities
+        del tile_mask_batch, tile_confidence_batch
+        del tile_outputs, tile_outputs_cpu, tiles, tile_records
+
+        if return_uncertainty:
+            del entropy, tile_uncertainty_batch
+
+    # Restore all outputs to the source image dimensions.
+    if (original_width, original_height) != (source_width, source_height):
+        mask = cv2.resize(
+            mask,
+            (source_width, source_height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        confidence_map = cv2.resize(
+            confidence_map,
+            (source_width, source_height),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        if return_uncertainty:
+            uncertainty_map = cv2.resize(
+                uncertainty_map,
+                (source_width, source_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
 
     if DEVICE.type == "mps":
         torch.mps.synchronize()
@@ -263,16 +449,27 @@ def predict_mask(image: Image.Image, return_stats=False, return_confidence=False
         "model": MODEL_NAME,
         "device": str(DEVICE),
         "inference_time_ms": round(elapsed_ms, 2),
-        "image_width": original_width,
-        "image_height": original_height,
-        "inference_width": min(tile_size, original_width),
-        "inference_height": min(tile_size, original_height),
+        "image_width": source_width,
+        "image_height": source_height,
+        "inference_width": original_width,
+        "inference_height": original_height,
         "inference_mode": "tiled",
         "tile_size": tile_size,
         "tile_overlap": overlap,
         "tile_count": total_tiles,
         "detected_classes": detected_classes,
     }
+
+    if profile:
+        stats["profile"] = {
+            key: round(value, 2)
+            for key, value in profile_times.items()
+        }
+        stats["profile"]["tile_count"] = total_tiles
+        stats["profile"]["sum_ms"] = round(
+            sum(profile_times.values()), 2
+        )
+        print("SEGMENTATION PROFILE:", stats["profile"])
 
     if return_uncertainty:
         return (

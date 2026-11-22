@@ -29,6 +29,10 @@ html {
     scroll-behavior: smooth;
 }
 
+html.language-pending body {
+    visibility: hidden;
+}
+
 body {
     margin: 0;
     min-height: 100vh;
@@ -161,6 +165,127 @@ header {
 .language-switch button.active {
     background: var(--surface-raised);
     color: var(--accent);
+}
+
+/* ================= PRIMARY NAVIGATION ================= */
+
+html {
+    scroll-behavior: smooth;
+}
+
+.primary-nav {
+    position: sticky;
+    top: 0;
+    z-index: 9;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    margin: 0 auto 30px;
+    padding: 13px 16px;
+    background: rgba(23, 32, 35, 0.96);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+    backdrop-filter: blur(14px);
+}
+
+.primary-nav-links {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    min-width: 0;
+    width: 100%;
+}
+
+.primary-nav a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 8px 17px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface-soft);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: color 0.18s ease, background 0.18s ease,
+                border-color 0.18s ease, transform 0.18s ease;
+}
+
+.primary-nav a:hover,
+.primary-nav a:focus-visible {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: rgba(67, 214, 189, 0.45);
+    outline: none;
+    transform: translateY(-1px);
+}
+
+html.auth-pending #authSection {
+    visibility: hidden;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+@media (max-width: 700px) {
+    .primary-nav {
+        padding: 10px 12px;
+        margin-bottom: 24px;
+    }
+
+    .primary-nav-links {
+        gap: 9px;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        padding-bottom: 3px;
+    }
+
+    .primary-nav a {
+        flex: 0 0 auto;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+}
+
+#processingSection,
+#resultSection,
+#obstacleAnalysis,
+#analysisHistory,
+#datasetPanel,
+#adminPanel {
+    scroll-margin-top: 92px;
+}
+
+@media (max-width: 700px) {
+    .primary-nav {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 7px;
+        padding: 10px 12px;
+        margin-bottom: 24px;
+    }
+
+    .primary-nav-links {
+        width: 100%;
+        max-width: 100%;
+        padding-bottom: 2px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
 }
 
 /* ================= MAIN LAYOUT ================= */
@@ -2711,6 +2836,50 @@ body {
 
 
 /* Dataset management controls */
+.dataset-split-generator {
+    display: grid;
+    gap: 12px;
+    margin: 14px 0;
+    padding: 16px;
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.dataset-split-generator h3 {
+    margin: 0;
+    font-size: 15px;
+}
+
+.dataset-split-ratios {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.dataset-split-ratios label {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.dataset-split-ratios input {
+    width: 82px;
+    min-height: 38px;
+    padding: 8px;
+    color: var(--text);
+    background: var(--surface, #102b31);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+    font-size: 12px;
+}
+
+.dataset-split-ratios input:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
 .dataset-management-toolbar,
 .dataset-split-filter {
     display: flex;
@@ -2789,5 +2958,251 @@ body {
     .image-move-select {
         min-width: 100px;
         max-width: 130px;
+    }
+}
+
+
+
+
+
+
+
+
+.evaluation-modal-header p,
+
+
+
+
+
+
+
+
+.evaluation-metric span,
+
+
+
+
+
+.evaluation-table-scroll,
+
+
+
+.evaluation-matrix th,
+
+
+
+
+
+@media (max-width: 760px) {
+
+
+}
+/* Compact dataset action buttons */
+#importDatasetButton,
+#createSplitsButton,
+#uploadDatasetButton {
+    width: fit-content;
+    min-width: 190px;
+    max-width: 100%;
+    justify-self: start;
+    padding: 10px 18px;
+    white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+    #importDatasetButton,
+    #createSplitsButton,
+    #uploadDatasetButton {
+        width: fit-content;
+        min-width: 0;
+        max-width: 100%;
+    }
+}
+
+
+/* Admin create user form */
+.admin-create-user-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 18px;
+    margin: 18px 0 22px;
+    padding: 22px;
+    background: var(--surface-soft);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.admin-create-user-form[hidden] {
+    display: none;
+}
+
+.admin-create-user-form h3 {
+    grid-column: 1 / -1;
+    margin: 0 0 2px;
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.admin-create-user-form label {
+    display: grid;
+    align-content: start;
+    gap: 8px;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.admin-create-user-form input,
+.admin-create-user-form select {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding: 10px 12px;
+    color: var(--text);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 13px;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.admin-create-user-form input:focus,
+.admin-create-user-form select:focus {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(67, 214, 189, 0.12);
+}
+
+.admin-create-user-form input::placeholder {
+    color: var(--subtle);
+}
+
+.admin-create-user-form button[type="submit"] {
+    justify-self: start;
+    min-width: 145px;
+    margin-top: 2px;
+}
+
+@media (max-width: 700px) {
+    .admin-create-user-form {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 14px;
+        padding: 16px;
+    }
+
+    .admin-create-user-form h3 {
+        grid-column: 1;
+    }
+
+    .admin-create-user-form button[type="submit"] {
+        width: 100%;
+    }
+}
+
+
+/* Dataset image actions */
+.image-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 190px;
+}
+
+.image-result-button,
+.image-delete-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background .18s ease, border-color .18s ease,
+                opacity .18s ease, transform .18s ease;
+}
+
+.image-result-button {
+    color: #10201e;
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.image-result-button:hover:not(:disabled) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+}
+
+.image-delete-button {
+    color: var(--text);
+    background: transparent;
+    border-color: rgba(220, 80, 80, .45);
+}
+
+.image-delete-button:hover:not(:disabled) {
+    color: #fff;
+    background: rgba(220, 80, 80, .16);
+    border-color: rgba(220, 80, 80, .75);
+}
+
+.image-result-button:disabled,
+.image-delete-button:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+@media (max-width: 760px) {
+    .image-actions {
+        min-width: 170px;
+        gap: 6px;
+    }
+
+    .image-result-button,
+    .image-delete-button {
+        padding: 7px 9px;
+    }
+}
+
+/* ================= UPLOAD SECTION SPACING ================= */
+
+/* More space between the section heading and upload card */
+#processingSection {
+    margin-bottom: 36px;
+}
+
+/* More internal space around the upload area */
+.upload-card {
+    padding: 32px;
+}
+
+/* Larger drag-and-drop zone */
+.upload-area {
+    min-height: 280px;
+    padding: 48px 24px;
+    box-sizing: border-box;
+}
+
+/* Mobile adjustments */
+@media (max-width: 600px) {
+    #processingSection {
+        margin-bottom: 26px;
+    }
+
+    .upload-card {
+        padding: 20px;
+    }
+
+    .upload-area {
+        min-height: 230px;
+        padding: 36px 18px;
     }
 }

@@ -51,16 +51,28 @@ def evaluate_masks(
             f"target={target.shape}"
         )
 
-    valid = (
-        (target != ignore_index)
-        & (target >= 0)
-        & (target < num_classes)
-        & (prediction >= 0)
-        & (prediction < num_classes)
+    valid = target != ignore_index
+
+    invalid_target = valid & (
+        (target < 0) | (target >= num_classes)
     )
+    if np.any(invalid_target):
+        values = np.unique(target[invalid_target]).tolist()
+        raise ValueError(
+            f"Ground Truth contains invalid class IDs: {values[:20]}"
+        )
 
     if not np.any(valid):
         raise ValueError("No valid pixels available for evaluation.")
+
+    invalid_prediction = valid & (
+        (prediction < 0) | (prediction >= num_classes)
+    )
+    if np.any(invalid_prediction):
+        values = np.unique(prediction[invalid_prediction]).tolist()
+        raise ValueError(
+            f"Prediction contains invalid class IDs: {values[:20]}"
+        )
 
     pred = prediction[valid].astype(np.int64)
     gt = target[valid].astype(np.int64)

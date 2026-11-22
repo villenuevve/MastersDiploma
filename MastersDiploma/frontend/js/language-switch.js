@@ -117,7 +117,7 @@
         "Select a dataset to view its contents.": "Оберіть датасет, щоб переглянути його вміст.",
         "Upload images to selected dataset": "Завантажити зображення до обраного датасету",
         "Upload and process images": "Завантажити та обробити зображення",
-        "Supported formats: JPG, JPEG and PNG. Maximum size: 20 MB per image.": "Підтримувані формати: JPG, JPEG та PNG. Максимальний розмір одного зображення — 20 МБ.",
+        "Supported formats: JPG, JPEG and PNG. Maximum size: 50 MB per image.": "Підтримувані формати: JPG, JPEG та PNG. Максимальний розмір одного зображення — 50 МБ.",
         "Image": "Зображення",
         "Resolution": "Роздільна здатність",
         "File size": "Розмір файлу",
@@ -166,6 +166,9 @@
     Object.assign(uk, {
         "Create dataset": "Створити датасет",
         "Edit dataset": "Редагувати датасет",
+        "Download Dataset": "Завантажити датасет",
+        "Download Dataset + Segmentation": "Завантажити датасет із сегментацією",
+        "Preparing ZIP...": "Підготовка ZIP-архіву...",
         "Delete dataset": "Видалити датасет",
         "Create Train / Val / Test": "Створити Train / Val / Test",
         "All images": "Усі зображення",
@@ -178,6 +181,8 @@
         "Split": "Вибірка",
         "Move to...": "Перемістити до...",
         "Move to dataset": "Перемістити до датасету",
+        "View results": "Переглянути результати",
+        "Delete": "Видалити",
         "Actions": "Дії",
         "Add User": "Додати користувача",
         "Cancel": "Скасувати",
@@ -190,9 +195,10 @@
         "No datasets found": "Датасетів не знайдено",
         "No images match the selected filters.": "За вибраними фільтрами зображень не знайдено.",
         "Unassigned": "Не призначено",
-        "Train": "Навчальна",
+        "Train": "Тренувальна",
         "Val": "Валідаційна",
-        "Test": "Тест",
+        "Validation": "Валідаційна",
+        "Test": "Тестова",
         "Yes": "Так",
         "No": "Ні"
     });
@@ -207,11 +213,52 @@
         "Showing": "Показано"
     });
 
+    Object.assign(uk, {
+        "Main navigation": "Головна навігація",
+        "Navigation": "НАВІГАЦІЯ",
+        "Segmentation": "Сегментація",
+        "Results": "Результати",
+        "Environment": "Середовище",
+        "Datasets": "Датасети",
+        "Users": "Користувачі"
+    });
+
+    Object.assign(uk, {
+        "Download Dataset": "Завантажити датасет",
+        "Import Dataset (ZIP archive)": "Імпортувати датасет (ZIP-архів)",
+        "Import Dataset": "Імпортувати датасет",
+        "Import a ZIP archive previously exported from this system. Maximum archive size: 500 MB.": "Імпортуйте ZIP-архів, раніше експортований із цієї системи. Максимальний розмір архіву: 500 МБ.",
+        "Automatic dataset split": "Автоматичний поділ датасету",
+        "Randomly distribute all images. The same seed and image set produce the same split.": "Випадково розподіліть усі зображення. Однакове початкове значення та набір зображень забезпечують однаковий поділ.",
+        "Train (%)": "Тренувальна (%)",
+        "Validation (%)": "Валідаційна (%)",
+        "Test (%)": "Тестова (%)",
+        "Random seed": "Початкове значення генератора випадкових чисел",
+        "Generate dataset split": "Створити поділ датасету"
+    });
+
     const en = Object.fromEntries(
         Object.entries(uk).map(([english, ukrainian]) => [ukrainian, english])
     );
 
     let language = "en";
+
+    try {
+        const savedLanguage = localStorage.getItem("segmentationLanguage");
+        if (savedLanguage === "uk" || savedLanguage === "en") {
+            language = savedLanguage;
+        }
+    } catch (error) {
+        console.warn("Could not restore language preference:", error);
+    }
+
+    function saveLanguagePreference() {
+        try {
+            localStorage.setItem("segmentationLanguage", language);
+        } catch (error) {
+            console.warn("Could not save language preference:", error);
+        }
+    }
 
     // Зберігаємо початковий текст, щоб не перекладати переклад повторно.
     const originalTexts = new WeakMap();
@@ -223,10 +270,38 @@
         let result = value;
 
         for (const key of keys) {
-            result = result.split(key).join(dictionary[key]);
+            const escapedKey = key
+                .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+                .replace(/\s+/g, "\\s+");
+
+            const startsWithWord = /^[\p{L}\p{N}_]/u.test(key);
+            const endsWithWord = /[\p{L}\p{N}_]$/u.test(key);
+
+            const pattern = new RegExp(
+                (startsWithWord ? "(^|[^\\p{L}\\p{N}_])" : "()") +
+                "(" + escapedKey + ")" +
+                (endsWithWord ? "(?=$|[^\\p{L}\\p{N}_])" : ""),
+                "giu"
+            );
+
+            result = result.replace(
+                pattern,
+                (match, prefix) => prefix + dictionary[key]
+            );
         }
 
         return result;
+    }
+
+    function shouldPreserveTextNode(node) {
+        const parent = node.parentElement;
+        if (!parent) return false;
+
+        return Boolean(parent.closest(
+            "#usersTableBody td:nth-child(2), " +
+            "#usersTableBody td:nth-child(3), " +
+            "#datasetImagesBody td:first-child"
+        ));
     }
 
     function updatePage(root = document.body) {
@@ -247,6 +322,7 @@
 
         nodes.forEach(node => {
             if (node.parentElement?.closest(".language-switch, .page-title p")) return;
+            if (shouldPreserveTextNode(node)) return;
 
             if (!originalTexts.has(node)) {
                 originalTexts.set(node, node.nodeValue);
@@ -278,6 +354,23 @@
             }
         });
 
+        // Названия выборок имеют отдельный контекст и не должны
+        // переводиться как классы семантической сегментации.
+        root.querySelectorAll("[data-split-name]").forEach(element => {
+            const splitName = element.dataset.splitName.trim().toLowerCase();
+
+            const labels = {
+                train: language === "uk" ? "Тренувальна" : "Train",
+                validation: language === "uk" ? "Валідаційна" : "Validation",
+                val: language === "uk" ? "Валідаційна" : "Validation",
+                test: language === "uk" ? "Тестова" : "Test"
+            };
+
+            if (labels[splitName]) {
+                element.textContent = labels[splitName];
+            }
+        });
+
         root.querySelectorAll("[placeholder], [title], [alt]").forEach(element => {
             let saved = originalAttributes.get(element);
 
@@ -304,15 +397,18 @@
         document.documentElement.lang = language;
         document.getElementById("lang-uk")?.classList.toggle("active", language === "uk");
         document.getElementById("lang-en")?.classList.toggle("active", language === "en");
+        document.documentElement.classList.remove("language-pending");
     }
 
     document.getElementById("lang-uk")?.addEventListener("click", () => {
         language = "uk";
+        saveLanguagePreference();
         updatePage();
     });
 
     document.getElementById("lang-en")?.addEventListener("click", () => {
         language = "en";
+        saveLanguagePreference();
         updatePage();
     });
 

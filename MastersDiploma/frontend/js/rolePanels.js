@@ -5,6 +5,8 @@
 
     const datasetPanel = document.getElementById("datasetPanel");
     const adminPanel = document.getElementById("adminPanel");
+    const datasetsNavLink = document.getElementById("navDatasets");
+    const usersNavLink = document.getElementById("navUsers");
 
     if (!datasetPanel || !adminPanel || !window.Auth) {
         console.error("Role panels could not be initialized.");
@@ -18,10 +20,18 @@
     const datasetMessage = document.getElementById("datasetMessage");
     const datasetSplitFilter = document.getElementById("datasetSplitFilter");
     const datasetImageSearch = document.getElementById("datasetImageSearch");
-    const groundTruthFilter = document.getElementById("groundTruthFilter");
-    const createDatasetButton = document.getElementById("createDatasetButton");
+        const createDatasetButton = document.getElementById("createDatasetButton");
     const editDatasetButton = document.getElementById("editDatasetButton");
+    const downloadDatasetButton = document.getElementById("downloadDatasetButton");
+    const downloadDatasetWithSegmentationButton =
+        document.getElementById("downloadDatasetWithSegmentationButton");
+    const importDatasetFile = document.getElementById("importDatasetFile");
+    const importDatasetButton = document.getElementById("importDatasetButton");
     const createSplitsButton = document.getElementById("createSplitsButton");
+    const trainPercentInput = document.getElementById("trainPercent");
+    const valPercentInput = document.getElementById("valPercent");
+    const testPercentInput = document.getElementById("testPercent");
+    const splitSeedInput = document.getElementById("splitSeed");
     const deleteDatasetButton = document.getElementById("deleteDatasetButton");
     const usersTableBody = document.getElementById("usersTableBody");
     const usersMessage = document.getElementById("usersMessage");
@@ -120,11 +130,19 @@
         datasetPanel.hidden = !canManageDatasets;
         adminPanel.hidden = !isAdmin;
 
+        if (datasetsNavLink) {
+            datasetsNavLink.hidden = !canManageDatasets;
+        }
+
+        if (usersNavLink) {
+            usersNavLink.hidden = !isAdmin;
+        }
+
         if (!canManageDatasets) {
             datasets = [];
             datasetSelect.innerHTML = '<option value="">Select dataset</option>';
             datasetImagesBody.innerHTML =
-                '<tr><td colspan="8">Select a dataset to view images.</td></tr>';
+                '<tr><td colspan="7">Select a dataset to view images.</td></tr>';
         }
 
         if (isAdmin) {
@@ -248,7 +266,7 @@
                 datasetSelect.innerHTML = '<option value="">No datasets found</option>';
                 datasetSummary.textContent = "No datasets found.";
                 datasetImagesBody.innerHTML =
-                    '<tr><td colspan="8">No images in this dataset.</td></tr>';
+                    '<tr><td colspan="7">No images in this dataset.</td></tr>';
                 return;
             }
 
@@ -267,6 +285,116 @@
         } catch (error) {
             datasetSelect.innerHTML = '<option value="">Failed to load datasets</option>';
             showMessage(datasetMessage, error.message, true);
+        }
+    }
+
+    async function downloadSelectedDataset(includePredictions = false) {
+        const dataset = selectedDataset();
+
+        if (!dataset) {
+            showMessage(datasetMessage, "Select a dataset first.", true);
+            return;
+        }
+
+        const button = includePredictions
+            ? downloadDatasetWithSegmentationButton
+            : downloadDatasetButton;
+
+        button.disabled = true;
+        const originalText = button.textContent;
+        button.textContent = "Preparing ZIP...";
+
+        try {
+            const safeName = String(dataset.name || "dataset")
+                .replace(/[^a-z0-9_-]+/gi, "_")
+                .replace(/^_+|_+$/g, "") || "dataset";
+
+            const suffix = includePredictions
+                ? "_with_segmentation"
+                : "";
+
+            const filename = `${safeName}_${dataset.id}${suffix}.zip`;
+
+            const url =
+                `${API_URL}/datasets/${dataset.id}/export` +
+                `?include_predictions=${includePredictions}`;
+
+            await window.Auth.downloadProtectedFile(url, filename);
+
+            showMessage(
+                datasetMessage,
+                includePredictions
+                    ? `Dataset "${dataset.name}" with saved segmentation results downloaded successfully.`
+                    : `Dataset "${dataset.name}" downloaded successfully.`
+            );
+        } catch (error) {
+            console.error("Dataset export failed:", error);
+            showMessage(
+                datasetMessage,
+                error.message || "Failed to download dataset.",
+                true
+            );
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    }
+
+    async function importDataset() {
+        const file = importDatasetFile.files[0];
+
+        if (!file) {
+            showMessage(datasetMessage, "Select a ZIP archive first.", true);
+            return;
+        }
+
+        if (!file.name.toLowerCase().endsWith(".zip")) {
+            showMessage(datasetMessage, "Only ZIP archives are supported.", true);
+            return;
+        }
+
+        if (file.size > 500 * 1024 * 1024) {
+            showMessage(
+                datasetMessage,
+                "Archive exceeds the maximum allowed size of 500 MB.",
+                true
+            );
+            return;
+        }
+
+        importDatasetButton.disabled = true;
+        importDatasetButton.textContent = "Importing...";
+        showMessage(datasetMessage, "Validating and importing dataset...");
+
+        try {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const result = await request("/datasets/import", {
+                method: "POST",
+                body: formData
+            });
+
+            importDatasetFile.value = "";
+
+            await loadDatasets(result.dataset_id);
+
+            showMessage(
+                datasetMessage,
+                `Dataset "${result.name}" imported successfully. ` +
+                `${result.image_count} images, ` +
+                `${result.ground_truth_count} Ground Truth masks.`
+            );
+        } catch (error) {
+            console.error("Dataset import failed:", error);
+            showMessage(
+                datasetMessage,
+                error.message || "Failed to import dataset.",
+                true
+            );
+        } finally {
+            importDatasetButton.disabled = false;
+            importDatasetButton.textContent = "Import Dataset";
         }
     }
 
@@ -299,11 +427,47 @@
         return splits;
     }
 
+    async function openDatasetImageResult(datasetId, imageId, filename) {
+        try {
+            showMessage(datasetMessage, "Loading saved segmentation result...");
+
+            const data = await request(
+                `/datasets/${datasetId}/images/${imageId}/result`
+            );
+
+            const originalResponse = await window.Auth.apiFetch(
+                `${API_URL}/datasets/${datasetId}/images/${imageId}/original`
+            );
+
+            if (!originalResponse.ok) {
+                throw new Error(
+                    `Could not load original image: HTTP ${originalResponse.status}`
+                );
+            }
+
+            const originalBlob = await originalResponse.blob();
+            const sourceFile = new File(
+                [originalBlob],
+                filename || data.filename || "image",
+                { type: originalBlob.type || "image/jpeg" }
+            );
+
+            if (typeof window.openSavedPredictionResult !== "function") {
+                throw new Error("Saved result viewer is not available.");
+            }
+
+            await window.openSavedPredictionResult(data, sourceFile);
+            showMessage(datasetMessage, "Saved segmentation result loaded.");
+        } catch (error) {
+            showMessage(datasetMessage, error.message, true);
+        }
+    }
+
     async function loadDatasetImages(datasetId) {
         if (!datasetId) return;
 
         datasetImagesBody.innerHTML =
-            '<tr><td colspan="8">Loading images...</td></tr>';
+            '<tr><td colspan="7">Loading images...</td></tr>';
 
         try {
             const dataset = datasets.find(item => item.id === Number(datasetId));
@@ -323,11 +487,16 @@
 
             createDatasetButton.hidden = false;
             editDatasetButton.disabled = systemDataset;
-            createSplitsButton.disabled = systemDataset || splits.length >= 3;
+            const totalDatasetImages = Number(dataset?.image_count ?? data.image_count ?? 0);
+            const splitGeneratorDisabled = systemDataset || totalDatasetImages === 0;
+
+            createSplitsButton.disabled = splitGeneratorDisabled;
+            [trainPercentInput, valPercentInput, testPercentInput, splitSeedInput].forEach(input => {
+                input.disabled = splitGeneratorDisabled;
+            });
             deleteDatasetButton.hidden =
                 !currentUser || currentUser.role !== "Administrator";
-            deleteDatasetButton.disabled =
-                systemDataset || Number(data.image_count) > 0 || splits.length > 0;
+            deleteDatasetButton.disabled = systemDataset;
 
             if (systemDataset) {
                 datasetSummary.textContent += " · System dataset";
@@ -335,34 +504,22 @@
 
             if (!Array.isArray(data.images) || data.images.length === 0) {
                 datasetImagesBody.innerHTML =
-                    '<tr><td colspan="8">No images in this dataset.</td></tr>';
+                    '<tr><td colspan="7">No images in this dataset.</td></tr>';
                 return;
             }
 
             const searchTerm = datasetImageSearch.value.trim().toLocaleLowerCase();
-            const gtFilter = groundTruthFilter.value;
 
-            const visibleImages = data.images.filter(image => {
-                const matchesName = String(image.filename || "")
-                    .toLocaleLowerCase()
-                    .includes(searchTerm);
-
-                const hasGroundTruth = Boolean(image.has_ground_truth);
-
-                const matchesGroundTruth =
-                    gtFilter === "all" ||
-                    (gtFilter === "with" && hasGroundTruth) ||
-                    (gtFilter === "without" && !hasGroundTruth);
-
-                return matchesName && matchesGroundTruth;
-            });
+            const visibleImages = data.images.filter(image =>
+                String(image.filename || "").toLocaleLowerCase().includes(searchTerm)
+            );
 
             datasetSummary.textContent =
                 `${data.dataset_name} · ${data.image_count} images · Showing ${visibleImages.length}`;
 
             if (visibleImages.length === 0) {
                 datasetImagesBody.innerHTML =
-                    '<tr><td colspan="8">No images match the selected filters.</td></tr>';
+                    '<tr><td colspan="7">No images match the selected filters.</td></tr>';
                 return;
             }
 
@@ -371,16 +528,6 @@
             );
 
             datasetImagesBody.innerHTML = visibleImages.map(image => {
-                const splitOptions = [
-                    '<option value="">Unassigned</option>',
-                    ...splits.map(split => `
-                        <option value="${split.id}"
-                            ${image.split_id === split.id ? "selected" : ""}>
-                            ${escapeHtml(split.name)}
-                        </option>
-                    `)
-                ].join("");
-
                 const moveOptions = [
                     '<option value="">Move to...</option>',
                     ...movableDatasets.map(item => `
@@ -389,8 +536,6 @@
                         </option>
                     `)
                 ].join("");
-
-                const hasGroundTruth = Boolean(image.has_ground_truth);
 
                 return `
                     <tr>
@@ -404,34 +549,9 @@
                             </span>
                         </td>
                         <td>
-                            <div class="ground-truth-cell">
-                                <span class="mask-status ${hasGroundTruth ? "is-active" : "is-inactive"}">
-                                    ${hasGroundTruth ? "Yes" : "No"}
-                                </span>
-                                <input
-                                    class="ground-truth-file"
-                                    type="file"
-                                    accept="image/png"
-                                    data-image-id="${image.id}"
-                                    aria-label="Upload Ground Truth for ${escapeHtml(image.filename)}"
-                                    ${systemDataset ? "disabled" : ""}
-                                >
-                                ${hasGroundTruth ? `
-                                    <button
-                                        class="ground-truth-delete-button danger-button"
-                                        type="button"
-                                        data-image-id="${image.id}"
-                                        ${systemDataset ? "disabled" : ""}
-                                    >Remove GT</button>
-                                ` : ""}
-                            </div>
-                        </td>
-                        <td>
-                            <select class="image-split-select"
-                                data-image-id="${image.id}"
-                                ${systemDataset || splits.length === 0 ? "disabled" : ""}>
-                                ${splitOptions}
-                            </select>
+                            <span data-split-name="${escapeHtml(image.split_name || "")}">
+                                ${escapeHtml(image.split_name || "Not assigned")}
+                            </span>
                         </td>
                         <td>
                             <select class="image-move-select"
@@ -439,81 +559,30 @@
                                 ${moveOptions}
                             </select>
                         </td>
-                        <td>
-                            <button class="image-delete-button danger-button"
-                                type="button"
-                                data-image-id="${image.id}"
-                                ${systemDataset ? "disabled" : ""}>
-                                Delete
-                            </button>
+                        <td class="image-actions-cell">
+                            <div class="image-actions">
+                                ${image.has_mask ? `
+                                    <button class="image-result-button"
+                                        type="button"
+                                        data-image-id="${image.id}"
+                                        data-dataset-id="${datasetId}">
+                                        View results
+                                    </button>
+                                ` : ""}
+                                <button class="image-delete-button danger-button"
+                                    type="button"
+                                    data-image-id="${image.id}"
+                                    ${systemDataset ? "disabled" : ""}>
+                                    Delete
+                                </button>
+                            </div>
                         </td>
                     </tr>
                 `;
             }).join("");
         } catch (error) {
             datasetImagesBody.innerHTML =
-                '<tr><td colspan="8">Failed to load data.</td></tr>';
-            showMessage(datasetMessage, error.message, true);
-        }
-    }
-
-    async function uploadGroundTruth(imageId, file) {
-        const dataset = selectedDataset();
-
-        if (!dataset || isSystemDataset(dataset) || !file) return;
-
-        if (
-            file.type !== "image/png" ||
-            !file.name.toLowerCase().endsWith(".png")
-        ) {
-            showMessage(datasetMessage, "Ground Truth must be a PNG file.", true);
-            return;
-        }
-
-        if (file.size > 20 * 1024 * 1024) {
-            showMessage(datasetMessage, "Ground Truth file exceeds 20 MB.", true);
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append("file", file);
-
-        try {
-            const result = await request(
-                `/datasets/${dataset.id}/images/${imageId}/ground-truth`,
-                {
-                    method: "POST",
-                    body: formData
-                }
-            );
-
-            showMessage(
-                datasetMessage,
-                `Ground Truth uploaded. Classes: ${result.classes.length}.`
-            );
-
-            await loadDatasetImages(dataset.id);
-        } catch (error) {
-            showMessage(datasetMessage, error.message, true);
-        }
-    }
-
-    async function deleteGroundTruth(imageId) {
-        const dataset = selectedDataset();
-
-        if (!dataset || isSystemDataset(dataset)) return;
-
-        if (!confirm("Delete the Ground Truth mask for this image?")) return;
-
-        try {
-            await request(
-                `/datasets/${dataset.id}/images/${imageId}/ground-truth`,
-                { method: "DELETE" }
-            );
-
-            showMessage(datasetMessage, "Ground Truth deleted.");
-            await loadDatasetImages(dataset.id);
-        } catch (error) {
+                '<tr><td colspan="7">Failed to load data.</td></tr>';
             showMessage(datasetMessage, error.message, true);
         }
     }
@@ -575,23 +644,70 @@
 
     async function createDatasetSplits() {
         const dataset = selectedDataset();
-
         if (!dataset || isSystemDataset(dataset)) return;
 
+        const train = Number(trainPercentInput.value);
+        const validation = Number(valPercentInput.value);
+        const test = Number(testPercentInput.value);
+        const seed = Number(splitSeedInput.value);
+
+        const values = [train, validation, test, seed];
+
+        if (values.some(value => !Number.isInteger(value) || !Number.isFinite(value))) {
+            showMessage(datasetMessage, "All values must be whole numbers.", true);
+            return;
+        }
+
+        if ([train, validation, test].some(value => value < 0 || value > 100)
+            || train + validation + test !== 100) {
+            showMessage(
+                datasetMessage,
+                "Train, Validation and Test percentages must sum to 100.",
+                true
+            );
+            return;
+        }
+
+        if (seed < 0 || seed > 4294967295) {
+            showMessage(datasetMessage, "Invalid random seed.", true);
+            return;
+        }
+
         if (!confirm(
-            `Create Train, Val and Test splits for "${dataset.name}"?`
+            `Regenerate split for "${dataset.name}"? All current assignments will be replaced.`
         )) return;
 
+        createSplitsButton.disabled = true;
+
         try {
-            await request(`/datasets/${dataset.id}/splits`, {
-                method: "POST"
+            const result = await request(`/datasets/${dataset.id}/splits`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    train_percent: train,
+                    val_percent: validation,
+                    test_percent: test,
+                    seed: seed
+                })
             });
 
             datasetSplitFilter.value = "";
-            showMessage(datasetMessage, "Train / Val / Test splits are ready.");
+
+            const counts = result.splits
+                .map(split => `${split.name}: ${split.image_count}`)
+                .join(" · ");
+
+            showMessage(
+                datasetMessage,
+                `Generated ${result.total_images} images · ${counts} · Seed: ${result.seed}`
+            );
+
             await loadDatasetImages(dataset.id);
+
         } catch (error) {
             showMessage(datasetMessage, error.message, true);
+        } finally {
+            createSplitsButton.disabled = false;
         }
     }
 
@@ -600,43 +716,32 @@
 
         if (!dataset || isSystemDataset(dataset)) return;
 
-        if (!confirm(
-            `Delete empty dataset "${dataset.name}"? This action cannot be undone.`
-        )) return;
+        const confirmed = confirm(
+            `Permanently delete dataset "${dataset.name}"?\n\n` +
+            `This will permanently delete all images, Ground Truth annotations, ` +
+            `predictions, detected classes, dataset splits and associated result files.\n\n` +
+            `This action cannot be undone.`
+        );
+
+        if (!confirmed) return;
 
         try {
-            await request(`/datasets/${dataset.id}`, {
+            const result = await request(`/datasets/${dataset.id}`, {
                 method: "DELETE"
             });
 
-            showMessage(datasetMessage, "Dataset deleted successfully.");
-            await loadDatasets();
-        } catch (error) {
-            showMessage(datasetMessage, error.message, true);
-        }
-    }
-
-    async function assignImageSplit(imageId, splitId) {
-        const dataset = selectedDataset();
-        if (!dataset || isSystemDataset(dataset)) return;
-
-        try {
-            await request(
-                `/datasets/${dataset.id}/images/${imageId}/split`,
-                {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        split_id: splitId ? Number(splitId) : null
-                    })
-                }
+            showMessage(
+                datasetMessage,
+                `Dataset deleted. Images: ${result.deleted_images}, ` +
+                `predictions: ${result.deleted_predictions}, ` +
+                `files: ${result.deleted_files}. ` +
+                `Cleanup failures: ${result.cleanup_failures}.`
             );
 
-            showMessage(datasetMessage, "Image split updated.");
-            await loadDatasetImages(dataset.id);
+            await loadDatasets();
+
         } catch (error) {
             showMessage(datasetMessage, error.message, true);
-            await loadDatasetImages(dataset.id);
         }
     }
 
@@ -754,12 +859,12 @@
             return;
         }
 
-        const oversizedFile = files.find(file => file.size > 20 * 1024 * 1024);
+        const oversizedFile = files.find(file => file.size > 50 * 1024 * 1024);
 
         if (oversizedFile) {
             showMessage(
                 datasetMessage,
-                `File exceeds 20 MB: ${oversizedFile.name}`,
+                `File exceeds 50 MB: ${oversizedFile.name}`,
                 true
             );
             return;
@@ -823,6 +928,16 @@
 
     createDatasetButton.addEventListener("click", createDataset);
     editDatasetButton.addEventListener("click", editDataset);
+    downloadDatasetButton.addEventListener(
+        "click",
+        () => downloadSelectedDataset(false)
+    );
+
+    downloadDatasetWithSegmentationButton.addEventListener(
+        "click",
+        () => downloadSelectedDataset(true)
+    );
+    importDatasetButton.addEventListener("click", importDataset);
     createSplitsButton.addEventListener("click", createDatasetSplits);
     deleteDatasetButton.addEventListener("click", deleteDataset);
 
@@ -834,31 +949,7 @@
         loadDatasetImages(Number(datasetSelect.value));
     });
 
-    groundTruthFilter.addEventListener("change", () => {
-        loadDatasetImages(Number(datasetSelect.value));
-    });
-
     datasetImagesBody.addEventListener("change", event => {
-        const groundTruthInput = event.target.closest(".ground-truth-file");
-
-        if (groundTruthInput && !groundTruthInput.disabled) {
-            const file = groundTruthInput.files[0];
-            const imageId = Number(groundTruthInput.dataset.imageId);
-            groundTruthInput.value = "";
-            if (file) uploadGroundTruth(imageId, file);
-            return;
-        }
-
-        const splitSelect = event.target.closest(".image-split-select");
-
-        if (splitSelect && !splitSelect.disabled) {
-            assignImageSplit(
-                Number(splitSelect.dataset.imageId),
-                splitSelect.value
-            );
-            return;
-        }
-
         const moveSelect = event.target.closest(".image-move-select");
 
         if (moveSelect && moveSelect.value) {
@@ -870,15 +961,34 @@
     });
 
     datasetImagesBody.addEventListener("click", event => {
-        const groundTruthButton = event.target.closest(".ground-truth-delete-button");
+        const resultButton = event.target.closest(".image-result-button");
 
-        if (groundTruthButton && !groundTruthButton.disabled) {
-            deleteGroundTruth(Number(groundTruthButton.dataset.imageId));
+        if (resultButton && !resultButton.disabled) {
+            resultButton.disabled = true;
+            resultButton.textContent =
+                document.documentElement.lang === "uk"
+                    ? "Завантаження..."
+                    : "Loading...";
+
+            const row = resultButton.closest("tr");
+            const filename = row?.querySelector("td")?.textContent?.trim();
+
+            openDatasetImageResult(
+                Number(resultButton.dataset.datasetId),
+                Number(resultButton.dataset.imageId),
+                filename
+            ).finally(() => {
+                resultButton.disabled = false;
+                resultButton.textContent =
+                    document.documentElement.lang === "uk"
+                        ? "Переглянути результати"
+                        : "View results";
+            });
+
             return;
         }
 
         const button = event.target.closest(".image-delete-button");
-
         if (button && !button.disabled) {
             deleteDatasetImage(Number(button.dataset.imageId));
         }

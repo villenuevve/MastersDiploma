@@ -55,18 +55,53 @@ def _extract_components(mask, selected_classes, category, min_area):
         )
 
         component_sizes = np.bincount(labels.ravel())
+        component_slices = ndimage.find_objects(labels)
 
-        for component_id in range(1, component_count + 1):
+        valid_components = [
+            component_id
+            for component_id in range(1, component_count + 1)
+            if component_sizes[component_id] >= min_area
+        ]
+
+        if not valid_components:
+            continue
+
+        # Calculate component centroids using weighted bincount.
+        # This is equivalent to ndimage.center_of_mass for integer labels.
+        flat_labels = labels.ravel()
+        foreground = np.flatnonzero(flat_labels)
+        component_ids = flat_labels[foreground]
+
+        sum_y = np.bincount(
+            component_ids,
+            weights=foreground // width,
+            minlength=component_count + 1,
+        )
+        sum_x = np.bincount(
+            component_ids,
+            weights=foreground % width,
+            minlength=component_count + 1,
+        )
+
+        centers = [
+            (
+                sum_y[component_id] / component_sizes[component_id],
+                sum_x[component_id] / component_sizes[component_id],
+            )
+            for component_id in valid_components
+        ]
+
+        for component_id, center in zip(valid_components, centers):
             area = int(component_sizes[component_id])
 
-            if area < min_area:
-                continue
+            component_slice = component_slices[component_id - 1]
 
-            component_mask = labels == component_id
-            y_coords, x_coords = np.nonzero(component_mask)
+            y_min = component_slice[0].start
+            y_max = component_slice[0].stop - 1
+            x_min = component_slice[1].start
+            x_max = component_slice[1].stop - 1
 
-            center_x = float(np.mean(x_coords))
-            center_y = float(np.mean(y_coords))
+            center_y, center_x = center
 
             objects.append({
                 "id": 0,
@@ -80,14 +115,14 @@ def _extract_components(mask, selected_classes, category, min_area):
                 ),
                 "position": _get_position(center_x, width),
                 "center": {
-                    "x": round(center_x, 1),
-                    "y": round(center_y, 1),
+                    "x": round(float(center_x), 1),
+                    "y": round(float(center_y), 1),
                 },
                 "bounding_box": {
-                    "x_min": int(np.min(x_coords)),
-                    "y_min": int(np.min(y_coords)),
-                    "x_max": int(np.max(x_coords)),
-                    "y_max": int(np.max(y_coords)),
+                    "x_min": int(x_min),
+                    "y_min": int(y_min),
+                    "x_max": int(x_max),
+                    "y_max": int(y_max),
                 },
             })
 
