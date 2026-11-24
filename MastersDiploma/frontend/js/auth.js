@@ -10,6 +10,18 @@
     const authDescription = document.getElementById("authDescription");
     const authUsername = document.getElementById("authUsername");
     const usernameField = document.getElementById("usernameField");
+    function authText(ukrainian, english) {
+        let language = "en";
+
+        try {
+            language = localStorage.getItem("segmentationLanguage") || "en";
+        } catch (error) {
+            console.warn("Could not read language preference:", error);
+        }
+
+        return language === "uk" ? ukrainian : english;
+    }
+
     const authEmail = document.getElementById("authEmail");
     const authPassword = document.getElementById("authPassword");
     const authSubmit = document.getElementById("authSubmit");
@@ -118,16 +130,18 @@
             ? "new-password"
             : "current-password";
 
-        authTitle.textContent = registerMode ? "Реєстрація" : "Вхід до системи";
+        authTitle.textContent = registerMode ? authText("Реєстрація", "Sign Up") : authText("Вхід до системи", "Sign In");
         authDescription.textContent = registerMode
-            ? "Створіть обліковий запис для роботи із системою."
-            : "Увійдіть, щоб продовжити роботу із системою.";
-        authSubmit.textContent = registerMode ? "Зареєструватися" : "Увійти";
+            ? authText("Створіть обліковий запис для роботи із системою.", "Create an account to use the system.")
+            : authText("Увійдіть, щоб продовжити роботу із системою.", "Sign in to continue using the system.");
+        authSubmit.textContent = registerMode ? authText("Зареєструватися", "Sign Up") : authText("Увійти", "Sign In");
         authModeToggle.textContent = registerMode
-            ? "Вже маєте обліковий запис? Увійти"
-            : "Немає облікового запису? Зареєструватися";
+            ? authText("Вже маєте обліковий запис? Увійти", "Already have an account? Sign In")
+            : authText("Немає облікового запису? Зареєструватися", "Don't have an account? Sign Up");
         setMessage("", "");
     }
+
+    window.addEventListener("app-language-changed", updateMode);
 
     async function apiFetch(url, options) {
         const requestOptions = options || {};
@@ -184,7 +198,7 @@
                         ) {
                             showUnauthenticatedState();
                             setMessage(
-                                "Сесію завершено. Увійдіть знову.",
+                                authText("Сесію завершено. Увійдіть знову.", "Your session has expired. Please sign in again."),
                                 "error"
                             );
                         }
@@ -334,14 +348,14 @@
                 const data = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(formatApiError(data.detail, "Помилка реєстрації."));
+                    throw new Error(formatApiError(data.detail, authText("Помилка реєстрації.", "Registration failed.")));
                 }
 
                 registerMode = false;
                 updateMode();
                 authPassword.value = "";
                 setMessage(
-                    "Обліковий запис створено. Тепер увійдіть до системи.",
+                    authText("Обліковий запис створено. Тепер увійдіть до системи.", "Account created. Please sign in."),
                     "success"
                 );
                 return;
@@ -359,7 +373,7 @@
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(formatApiError(data.detail, "Неправильний email або пароль."));
+                throw new Error(formatApiError(data.detail, authText("Неправильний email або пароль.", "Incorrect email or password.")));
             }
 
             sessionStorage.setItem(TOKEN_KEY, data.access_token);
@@ -368,13 +382,13 @@
             const profile = await profileResponse.json();
 
             if (!profileResponse.ok) {
-                throw new Error(formatApiError(profile.detail, "Не вдалося отримати профіль."));
+                throw new Error(formatApiError(profile.detail, authText("Не вдалося отримати профіль.", "Could not retrieve the user profile.")));
             }
 
             authPassword.value = "";
             showAuthenticatedState(profile);
         } catch (error) {
-            setMessage(error.message || "Помилка авторизації.", "error");
+            setMessage(error.message || authText("Помилка авторизації.", "Authentication failed."), "error");
         } finally {
             authSubmit.disabled = false;
         }
@@ -383,7 +397,7 @@
     // Завершуємо поточну сесію користувача.
     logoutButton.addEventListener("click", function () {
         showUnauthenticatedState();
-        setMessage("Ви вийшли із системи.", "success");
+        setMessage(authText("Ви вийшли із системи.", "You have been logged out."), "success");
     });
 
     // Перевіряємо наявність і чинність збереженої сесії під час запуску.
@@ -402,7 +416,7 @@
             if (response.status === 401) {
                 showUnauthenticatedState();
                 setMessage(
-                    "Сесію завершено. Увійдіть знову.",
+                    authText("Сесію завершено. Увійдіть знову.", "Your session has expired. Please sign in again."),
                     "error"
                 );
                 return;
@@ -410,7 +424,7 @@
 
             if (!response.ok) {
                 setMessage(
-                    "Сервер тимчасово не може перевірити сесію. Оновіть сторінку пізніше.",
+                    authText("Сервер тимчасово не може перевірити сесію. Оновіть сторінку пізніше.", "The server cannot verify the session right now. Please try again later."),
                     "error"
                 );
                 return;

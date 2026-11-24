@@ -237,6 +237,24 @@
         "Generate dataset split": "Створити поділ датасету"
     });
 
+    Object.assign(uk, {
+        "Sign In": "Увійти",
+        "Sign Up": "Зареєструватися",
+        "Password": "Пароль",
+        "Sign in to continue using the system.": "Увійдіть, щоб продовжити роботу із системою.",
+        "Create an account to use the system.": "Створіть обліковий запис для роботи із системою.",
+        "Already have an account? Sign In": "Вже маєте обліковий запис? Увійти",
+        "Don't have an account? Sign Up": "Немає облікового запису? Зареєструватися",
+        "Your session has expired. Please sign in again.": "Сесію завершено. Увійдіть знову.",
+        "Account created. Please sign in.": "Обліковий запис створено. Тепер увійдіть до системи.",
+        "Registration failed.": "Помилка реєстрації.",
+        "Incorrect email or password.": "Неправильний email або пароль.",
+        "Could not retrieve the user profile.": "Не вдалося отримати профіль.",
+        "Authentication failed.": "Помилка авторизації.",
+        "You have been logged out.": "Ви вийшли із системи.",
+        "The server cannot verify the session right now. Please try again later.": "Сервер тимчасово не може перевірити сесію. Оновіть сторінку пізніше."
+    });
+
     const en = Object.fromEntries(
         Object.entries(uk).map(([english, ukrainian]) => [ukrainian, english])
     );
@@ -404,12 +422,14 @@
         language = "uk";
         saveLanguagePreference();
         updatePage();
+        window.dispatchEvent(new Event("app-language-changed"));
     });
 
     document.getElementById("lang-en")?.addEventListener("click", () => {
         language = "en";
         saveLanguagePreference();
         updatePage();
+        window.dispatchEvent(new Event("app-language-changed"));
     });
 
     updatePage();
