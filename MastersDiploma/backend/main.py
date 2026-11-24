@@ -1,5 +1,5 @@
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,9 +31,11 @@ from time import perf_counter
 import base64
 import numpy as np
 import json
+import cv2
 import uuid
 import zipfile
 import re
+from threading import Lock, Thread
 import random
 import csv
 
@@ -65,6 +67,393 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 MAX_IMAGE_SIDE = 12_000
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+VIDEO_RESULTS_DIR = RESULTS_DIR / "videos"
+VIDEO_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_VIDEO_UPLOAD_BYTES = 200 * 1024 * 1024
+MAX_VIDEO_DURATION_SECONDS = 120
+MAX_VIDEO_FRAME_PIXELS = 8_000_000
+
+# VIDEO_PROGRESS_IMPLEMENTATION
+VIDEO_JOBS = {}
+VIDEO_JOBS_LOCK = Lock()
+
+
+def _video_job_update(video_id, **changes):
+    with VIDEO_JOBS_LOCK:
+        job = VIDEO_JOBS.get(video_id)
+        if job is not None:
+            job.update(changes)
+
+
+def _get_video_job_for_user(video_id, current_user):
+    if not re.fullmatch(r"[0-9a-f]{32}", video_id):
+        raise HTTPException(status_code=404, detail="Video job not found.")
+
+    with VIDEO_JOBS_LOCK:
+        job = VIDEO_JOBS.get(video_id)
+        if job is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Video job not found. It may have been cleared after a server restart."
+            )
+        result = dict(job)
+
+    role_name = getattr(getattr(current_user, "role", None), "name", None)
+    if (
+        role_name not in ("Administrator", "Technician")
+        and result.get("owner_id") != current_user.id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to access this video job."
+        )
+
+    return result
+
+
+def _process_video_job(video_id, source_path, output_path, metadata_path,
+                       owner_id, original_filename, frame_interval):
+    started_at = perf_counter()
+    capture = None
+    writer = None
+    frame_index = 0
+    processed_frames = 0
+    inference_time_ms = 0.0
+    flow_frames = 0
+    last_mask = None
+    previous_gray = None
+    cancelled = False
+
+    FLOW_SCALE = 0.5
+    INFERENCE_MAX_SIDE = 1024
+    MOTION_THRESHOLD = 3.5
+
+    _video_job_update(
+        video_id,
+        status="processing",
+        message="Initializing video decoder and segmentation model.",
+        started_at=started_at
+    )
+
+    try:
+        capture = cv2.VideoCapture(str(source_path))
+
+        if not capture.isOpened():
+            raise ValueError("Could not decode the uploaded video.")
+
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        source_frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        if not np.isfinite(fps) or fps <= 0:
+            raise ValueError("Invalid video frame rate.")
+        if width <= 0 or height <= 0:
+            raise ValueError("Invalid video dimensions.")
+        if width * height > MAX_VIDEO_FRAME_PIXELS:
+            raise ValueError("Video resolution exceeds the 8-megapixel limit.")
+        if (
+            source_frame_count > 0
+            and source_frame_count / fps > MAX_VIDEO_DURATION_SECONDS
+        ):
+            raise ValueError("Video duration exceeds the 120-second limit.")
+
+        writer = cv2.VideoWriter(
+            str(output_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width, height)
+        )
+
+        if not writer.isOpened():
+            raise ValueError("Could not initialize the MP4 encoder.")
+
+        _video_job_update(
+            video_id,
+            message="Segmentation with Optical Flow started.",
+            width=width,
+            height=height,
+            source_fps=round(fps, 3),
+            source_frames=source_frame_count,
+            total_frames_to_process=source_frame_count
+        )
+
+        flow_width = max(1, int(width * FLOW_SCALE))
+        flow_height = max(1, int(height * FLOW_SCALE))
+
+        while True:
+            with VIDEO_JOBS_LOCK:
+                job = VIDEO_JOBS.get(video_id, {})
+                cancel_requested = job.get("cancel_requested", False)
+
+            if cancel_requested:
+                cancelled = True
+                break
+
+            success, frame_bgr = capture.read()
+            if not success:
+                break
+
+            if frame_index / fps >= MAX_VIDEO_DURATION_SECONDS:
+                raise ValueError("Video duration exceeds the 120-second limit.")
+
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+            gray = cv2.cvtColor(
+                cv2.resize(
+                    frame_bgr,
+                    (flow_width, flow_height),
+                    interpolation=cv2.INTER_AREA
+                ),
+                cv2.COLOR_BGR2GRAY
+            )
+
+            motion = 0.0
+            warped_mask = None
+
+            if last_mask is not None and previous_gray is not None:
+                # Current-to-previous optical flow for mask remapping.
+                flow = cv2.calcOpticalFlowFarneback(
+                    gray,
+                    previous_gray,
+                    None,
+                    0.5,
+                    3,
+                    15,
+                    2,
+                    5,
+                    1.1,
+                    0
+                )
+
+                magnitude = np.sqrt(
+                    flow[..., 0] ** 2 + flow[..., 1] ** 2
+                )
+                motion = float(np.mean(magnitude))
+
+                flow = cv2.resize(
+                    flow,
+                    (width, height),
+                    interpolation=cv2.INTER_LINEAR
+                )
+                flow /= FLOW_SCALE
+
+                grid_x, grid_y = np.meshgrid(
+                    np.arange(width, dtype=np.float32),
+                    np.arange(height, dtype=np.float32)
+                )
+
+                warped_mask = cv2.remap(
+                    last_mask,
+                    grid_x + flow[..., 0],
+                    grid_y + flow[..., 1],
+                    interpolation=cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_REPLICATE
+                )
+
+                flow_frames += 1
+
+            periodic_inference = (
+                last_mask is None
+                or frame_index % max(1, frame_interval) == 0
+            )
+
+            motion_inference = (
+                last_mask is not None
+                and motion >= MOTION_THRESHOLD
+            )
+
+            run_inference = periodic_inference or motion_inference
+
+            if run_inference:
+                scale = min(
+                    1.0,
+                    INFERENCE_MAX_SIDE / max(width, height)
+                )
+
+                infer_width = max(1, int(width * scale))
+                infer_height = max(1, int(height * scale))
+
+                infer_rgb = cv2.resize(
+                    frame_rgb,
+                    (infer_width, infer_height),
+                    interpolation=cv2.INTER_AREA
+                )
+
+                inference_start = perf_counter()
+                predicted_mask = predict_mask(Image.fromarray(infer_rgb))
+                inference_time_ms += (
+                    perf_counter() - inference_start
+                ) * 1000
+
+                if predicted_mask.shape[:2] != (height, width):
+                    predicted_mask = cv2.resize(
+                        predicted_mask.astype(np.uint8),
+                        (width, height),
+                        interpolation=cv2.INTER_NEAREST
+                    )
+
+                last_mask = predicted_mask.astype(np.uint8)
+                processed_frames += 1
+                reason = "motion" if motion_inference and not periodic_inference else "scheduled"
+
+            else:
+                if warped_mask is None:
+                    raise ValueError("Optical Flow mask propagation failed.")
+
+                last_mask = warped_mask.astype(np.uint8)
+                reason = "optical_flow"
+
+            colored_mask = colorize_mask(last_mask)
+
+            if colored_mask.shape[:2] != (height, width):
+                colored_mask = cv2.resize(
+                    colored_mask,
+                    (width, height),
+                    interpolation=cv2.INTER_NEAREST
+                )
+
+            overlay = cv2.addWeighted(
+                frame_rgb, 0.45,
+                colored_mask, 0.55,
+                0
+            )
+
+            writer.write(
+                cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
+            )
+
+            previous_gray = gray
+            frame_index += 1
+
+            if frame_index % 10 == 0 or frame_index == 1 or run_inference:
+                elapsed = max(perf_counter() - started_at, 0.001)
+                speed = frame_index / elapsed
+
+                progress = (
+                    min(99.9, frame_index / source_frame_count * 100)
+                    if source_frame_count > 0 else 0
+                )
+
+                eta = (
+                    (source_frame_count - frame_index) / speed
+                    if source_frame_count > 0 and speed > 0
+                    else None
+                )
+
+                _video_job_update(
+                    video_id,
+                    processed_frames=processed_frames,
+                    rendered_frames=frame_index,
+                    current_frame=frame_index,
+                    progress_percent=round(progress, 1),
+                    speed_fps=round(speed, 2),
+                    elapsed_seconds=round(elapsed, 1),
+                    eta_seconds=round(eta, 1) if eta is not None else None,
+                    inference_time_ms=round(inference_time_ms, 1),
+                    flow_frames=flow_frames,
+                    last_keyframe_reason=reason,
+                    message=(
+                        f"Rendered {frame_index} frames; "
+                        f"SegFormer inference: {processed_frames} frames."
+                    )
+                )
+
+        capture.release()
+        capture = None
+        writer.release()
+        writer = None
+
+        if cancelled:
+            output_path.unlink(missing_ok=True)
+            _video_job_update(
+                video_id,
+                status="cancelled",
+                message="Video processing was cancelled.",
+                progress_percent=round(
+                    frame_index / source_frame_count * 100, 1
+                ) if source_frame_count > 0 else 0,
+                elapsed_seconds=round(perf_counter() - started_at, 1),
+                eta_seconds=0
+            )
+            return
+
+        if frame_index == 0 or processed_frames == 0:
+            raise ValueError("The uploaded video contains no readable frames.")
+
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise ValueError("Video rendering failed.")
+
+        elapsed = perf_counter() - started_at
+
+        metadata = {
+            "video_id": video_id,
+            "owner_id": owner_id,
+            "original_filename": original_filename,
+            "output_filename": output_path.name,
+            "fps": round(fps, 3),
+            "width": width,
+            "height": height,
+            "source_frames": frame_index,
+            "processed_frames": processed_frames,
+            "rendered_frames": frame_index,
+            "flow_frames": flow_frames,
+            "frame_interval": frame_interval,
+            "duration_seconds": round(frame_index / fps, 2),
+            "inference_time_ms": round(inference_time_ms, 2),
+            "processing_time_seconds": round(elapsed, 2),
+            "average_inference_ms": round(
+                inference_time_ms / processed_frames, 2
+            ),
+            "model": "SegFormer-B3",
+            "video_method": "SegFormer + Optical Flow",
+            "inference_max_side": INFERENCE_MAX_SIDE
+        }
+
+        temporary_metadata = metadata_path.with_suffix(".tmp")
+        temporary_metadata.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        temporary_metadata.replace(metadata_path)
+
+        _video_job_update(
+            video_id,
+            status="completed",
+            message="Video segmentation completed.",
+            progress_percent=100.0,
+            elapsed_seconds=round(elapsed, 1),
+            eta_seconds=0,
+            speed_fps=round(frame_index / max(elapsed, 0.001), 2),
+            metadata=metadata,
+            video_url=f"/video/results/{video_id}"
+        )
+
+    except Exception as error:
+        output_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        _video_job_update(
+            video_id,
+            status="failed",
+            message=str(error),
+            error=str(error),
+            elapsed_seconds=round(perf_counter() - started_at, 1),
+            eta_seconds=None
+        )
+
+    finally:
+        if capture is not None:
+            capture.release()
+        if writer is not None:
+            writer.release()
+        source_path.unlink(missing_ok=True)
+
+
+
+VIDEO_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
+
 
 CLASS_NAMES = {
     0: "road",
@@ -142,6 +531,7 @@ def ensure_dataset_access(
             status_code=403,
             detail="You do not have permission to access this dataset."
         )
+@app.get("/")
 def root():
     return {
         "status": "ok",
@@ -1042,6 +1432,227 @@ def get_result(
     return FileResponse(
         file_path,
         filename=safe_name if download else None
+    )
+
+
+
+
+
+
+# ================= VIDEO SEMANTIC SEGMENTATION =================
+
+@app.post("/video/predict")
+def predict_video(
+    file: UploadFile = File(...),
+    frame_interval: int = Form(default=5, ge=1, le=30),
+    current_user: User = Depends(get_current_user),
+):
+    video_id = uuid.uuid4().hex
+    extension = Path(file.filename or "").suffix.lower()
+
+    if extension not in VIDEO_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported video format. Upload MP4, MOV, AVI or MKV."
+        )
+
+    with VIDEO_JOBS_LOCK:
+        if any(
+            job.get("status") in ("queued", "processing")
+            for job in VIDEO_JOBS.values()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Another video is currently being processed. Wait until it finishes."
+            )
+
+    source_path = VIDEO_RESULTS_DIR / f".{video_id}_source{extension}"
+    output_path = VIDEO_RESULTS_DIR / f"{video_id}.mp4"
+    metadata_path = VIDEO_RESULTS_DIR / f"{video_id}.json"
+
+    try:
+        total_bytes = 0
+        with source_path.open("wb") as destination:
+            while True:
+                chunk = file.file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_VIDEO_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Video exceeds the 200 MB upload limit."
+                    )
+                destination.write(chunk)
+
+        if total_bytes == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="The uploaded video is empty."
+            )
+
+        job = {
+            "video_id": video_id,
+            "owner_id": current_user.id,
+            "status": "queued",
+            "message": "Video uploaded. Waiting for segmentation.",
+            "progress_percent": 0.0,
+            "processed_frames": 0,
+            "total_frames_to_process": 0,
+            "current_frame": 0,
+            "speed_fps": 0.0,
+            "elapsed_seconds": 0.0,
+            "eta_seconds": None,
+            "cancel_requested": False,
+            "created_at": datetime.utcnow().isoformat()
+        }
+
+        with VIDEO_JOBS_LOCK:
+            VIDEO_JOBS[video_id] = job
+
+        worker = Thread(
+            target=_process_video_job,
+            args=(
+                video_id,
+                source_path,
+                output_path,
+                metadata_path,
+                current_user.id,
+                Path(file.filename or "video").name,
+                frame_interval
+            ),
+            daemon=True
+        )
+        worker.start()
+
+        return {
+            "success": True,
+            "video_id": video_id,
+            "status": "queued",
+            "status_url": f"/video/status/{video_id}"
+        }
+
+    except HTTPException:
+        source_path.unlink(missing_ok=True)
+        raise
+    except Exception as error:
+        source_path.unlink(missing_ok=True)
+        with VIDEO_JOBS_LOCK:
+            VIDEO_JOBS.pop(video_id, None)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not start video processing: {str(error)}"
+        )
+
+
+@app.get("/video/status/{video_id}")
+def get_video_status(
+    video_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    job = _get_video_job_for_user(video_id, current_user)
+    started_at = job.get("started_at")
+    if started_at is not None and job.get("status") == "processing":
+        job["elapsed_seconds"] = round(perf_counter() - started_at, 1)
+
+    job.pop("cancel_requested", None)
+    job.pop("started_at", None)
+    job.pop("owner_id", None)
+    return job
+
+
+@app.post("/video/cancel/{video_id}")
+def cancel_video(
+    video_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    _get_video_job_for_user(video_id, current_user)
+
+    with VIDEO_JOBS_LOCK:
+        job = VIDEO_JOBS.get(video_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Video job not found.")
+        if job.get("status") not in ("queued", "processing"):
+            return {
+                "success": False,
+                "status": job.get("status"),
+                "message": "This video job is no longer active."
+            }
+        job["cancel_requested"] = True
+        job["message"] = "Cancellation requested. Waiting for the current frame to finish."
+
+    return {
+        "success": True,
+        "status": "cancelling",
+        "message": "Video cancellation requested."
+    }
+
+
+@app.get("/video/results/{video_id}")
+def get_video_result(
+    video_id: str,
+    download: bool = False,
+    current_user: User = Depends(get_current_user),
+):
+    if not re.fullmatch(r"[0-9a-f]{32}", video_id):
+        raise HTTPException(
+            status_code=404,
+            detail="Video result not found."
+        )
+
+    metadata_path = VIDEO_RESULTS_DIR / f"{video_id}.json"
+
+    if not metadata_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Video result not found."
+        )
+
+    try:
+        metadata = json.loads(
+            metadata_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(
+            status_code=500,
+            detail="Could not read video metadata."
+        )
+
+    if metadata.get("video_id") != video_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Invalid video metadata."
+        )
+
+    if (
+        current_user.role.name not in ("Administrator", "Technician")
+        and metadata.get("owner_id") != current_user.id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to access this video."
+        )
+
+    output_filename = metadata.get("output_filename")
+
+    if output_filename != f"{video_id}.mp4":
+        raise HTTPException(
+            status_code=404,
+            detail="Invalid video result filename."
+        )
+
+    output_path = VIDEO_RESULTS_DIR / output_filename
+
+    if not output_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Video file not found."
+        )
+
+    return FileResponse(
+        output_path,
+        media_type="video/mp4",
+        filename=output_filename if download else None
     )
 
 
